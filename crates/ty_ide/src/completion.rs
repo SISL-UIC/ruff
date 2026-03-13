@@ -2699,6 +2699,7 @@ fn completion_kind_from_type<'db>(db: &'db dyn Db, ty: Type<'db>) -> Option<Comp
             Type::NominalInstance(_)
             | Type::PropertyInstance(_)
             | Type::BoundSuper(_)
+            | Type::TypedDictTop
             | Type::TypedDict(_)
             | Type::NewTypeInstance(_)
             | Type::EnumComplement(_) => CompletionKind::Struct,
