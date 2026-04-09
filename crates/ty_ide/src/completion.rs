@@ -9403,6 +9403,8 @@ TypedDi<CURSOR>
             @"
         TypedDict :: , TypedDict
         is_typeddict :: , is_typeddict
+        TypedDictTop :: from ty_extensions import TypedDictTop
+
         _FilterConfigurationTypedDict :: from logging.config import _FilterConfigurationTypedDict
 
         _FormatterConfigurationTypedDict :: from logging.config import _FormatterConfigurationTypedDict
