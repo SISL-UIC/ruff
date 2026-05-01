@@ -33,8 +33,8 @@ use crate::place::{
     ConsideredDefinitions, DefinedPlace, Definedness, LookupError, Place, PlaceAndQualifiers,
     TypeOrigin, builtins_module_scope, builtins_symbol, class_body_implicit_symbol,
     explicit_global_symbol, loop_header_reachability, module_type_implicit_global_declaration,
-    module_type_implicit_global_symbol, place, place_from_bindings, place_from_declarations,
-    typing_extensions_symbol,
+    module_type_implicit_global_symbol, place, place_from_bindings, place_from_bindings_for_place,
+    place_from_declarations, typing_extensions_symbol,
 };
 use crate::reachability::ReachabilityConstraintsExtension;
 use crate::types::add_inferred_python_version_hint_to_diagnostic;
@@ -7020,13 +7020,13 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             parenthesized: _,
         } = generator;
 
+        self.infer_comprehensions(generators);
         let elt_tcx = if elt.is_starred_expr() {
             tcx.map(|yield_ty| KnownClass::Iterable.to_specialized_instance(self.db(), &[yield_ty]))
         } else {
             tcx
         };
         self.infer_expression(elt, elt_tcx);
-        self.infer_comprehensions(generators);
     }
 
     fn infer_list_comprehension_expression_scope(
@@ -7041,11 +7041,12 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             generators,
         } = listcomp;
 
+        self.infer_comprehensions(generators);
+
         // Infer the element type using the outer type context.
         let elts = [[Some(elt.as_ref())]];
         let mut infer_elt_ty =
             |builder: &mut Self, (_, elt, tcx)| builder.infer_expression(elt, tcx);
-
         self.infer_collection_literal(
             KnownClass::List,
             Some(listcomp.into()),
@@ -7053,8 +7054,6 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             &mut infer_elt_ty,
             tcx,
         );
-
-        self.infer_comprehensions(generators);
     }
 
     fn infer_set_comprehension_expression_scope(
@@ -7069,11 +7068,12 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             generators,
         } = setcomp;
 
+        self.infer_comprehensions(generators);
+
         // Infer the element type using the outer type context.
         let elts = [[Some(elt.as_ref())]];
         let mut infer_elt_ty =
             |builder: &mut Self, (_, elt, tcx)| builder.infer_expression(elt, tcx);
-
         self.infer_collection_literal(
             KnownClass::Set,
             Some(setcomp.into()),
@@ -7081,8 +7081,6 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             &mut infer_elt_ty,
             tcx,
         );
-
-        self.infer_comprehensions(generators);
     }
 
     fn infer_dict_comprehension_expression_scope(
@@ -7097,6 +7095,8 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             value,
             generators,
         } = dictcomp;
+
+        self.infer_comprehensions(generators);
 
         if key.is_some() {
             // Infer the key and value types using the outer type context.
@@ -7117,8 +7117,6 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             // mapping diagnostic twice.
             self.infer_expression(value, TypeContext::default());
         }
-
-        self.infer_comprehensions(generators);
     }
 
     fn infer_comprehensions(&mut self, comprehensions: &[ast::Comprehension]) {
@@ -8503,7 +8501,8 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         // If we're inferring types of deferred expressions, look them up from end-of-scope.
         if self.is_deferred() {
             let place = if let Some(place_id) = place_table.place_id(expr) {
-                place_from_bindings(db, use_def.reachable_bindings(place_id)).place
+                place_from_bindings_for_place(db, use_def.reachable_bindings(place_id), place_id)
+                    .place
             } else {
                 assert!(
                     self.in_string_annotation(),
@@ -8534,7 +8533,11 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             }
 
             let use_id = expr_ref.scoped_use_id(db, scope);
-            let place = place_from_bindings(db, use_def.bindings_at_use(use_id)).place;
+            let place_id = place_table.place_id(expr).expect(
+                "Expected the place table to create a place for every valid PlaceExpr node",
+            );
+            let place =
+                place_from_bindings_for_place(db, use_def.bindings_at_use(use_id), place_id).place;
 
             (place, Some(use_id))
         }
