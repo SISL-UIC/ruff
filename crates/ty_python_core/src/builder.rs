@@ -1719,41 +1719,6 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
             return;
         }
 
-        if reachability == DeferredWalrusReachability::Conditional {
-            let symbol = place
-                .as_symbol()
-                .expect("deferred walrus target should be a symbol");
-            let associated_member_ids = self.place_tables[scope]
-                .associated_place_ids(place)
-                .iter()
-                .copied()
-                .collect::<Vec<_>>();
-            let pre_definition =
-                self.use_def_maps[scope].single_symbol_snapshot(symbol, &associated_member_ids);
-            let pre_definition_reachability = self.use_def_maps[scope].reachability;
-            let walrus_reachability = Self::walrus_reachability_constraint(reachability);
-            self.use_def_maps[scope].reachability = self.use_def_maps[scope]
-                .reachability_constraints
-                .add_and_constraint(pre_definition_reachability, walrus_reachability);
-
-            self.use_def_maps[scope].record_binding(
-                place,
-                definition,
-                PreviousDefinitions::AreShadowed,
-            );
-            self.delete_associated_bindings_in_scope(scope, place);
-            self.use_def_maps[scope].record_and_negate_single_symbol_reachability_constraint(
-                walrus_reachability,
-                symbol,
-                pre_definition,
-            );
-            self.use_def_maps[scope].reachability = pre_definition_reachability;
-
-            self.try_node_context_stack_manager
-                .record_definition(scope_index, &self.use_def_maps[scope]);
-            return;
-        }
-
         self.use_def_maps[scope].record_binding(
             place,
             definition,
