@@ -1510,6 +1510,12 @@ impl DefinitionNodeKey {
     }
 }
 
+impl From<ast::AnyNodeRef<'_>> for DefinitionNodeKey {
+    fn from(node: ast::AnyNodeRef<'_>) -> Self {
+        Self(NodeKey::from_node(node))
+    }
+}
+
 impl From<&ast::Alias> for DefinitionNodeKey {
     fn from(node: &ast::Alias) -> Self {
         Self(NodeKey::from_node(node))

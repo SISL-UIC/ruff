@@ -531,13 +531,12 @@ impl<'db> SemanticIndex<'db> {
         &self.definitions_by_node[&definition_key.into()]
     }
 
-    /// Returns the [`definition::Definition`] salsa ingredient(s) for `definition_node`, if any.
+    /// Returns the [`definition::Definition`] salsa ingredient(s) for `definition_key`, if any.
     pub fn try_definitions(
         &self,
-        definition_node: ast::AnyNodeRef<'_>,
+        definition_key: impl Into<DefinitionNodeKey>,
     ) -> Option<&Definitions<'db>> {
-        let definition_key = DefinitionNodeKey::from_node_ref(definition_node);
-        self.definitions_by_node.get(&definition_key)
+        self.definitions_by_node.get(&definition_key.into())
     }
 
     /// Returns the [`definition::Definition`] salsa ingredient for `definition_key`.
