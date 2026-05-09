@@ -1715,3 +1715,82 @@ def _(args_tuple: tuple[int, int], args_union: tuple[int] | tuple[int, int], kwa
     f(*args_tuple, **kwargs)  # fine
     f(*args_union, **kwargs)  # fine
 ```
+
+Dictionary-backed keyword splats can still use the matched parameter type as context when inferring
+fresh dictionary literal values. The same contextual inference applies across overloads by combining
+the matched keyword parameter types:
+
+```py
+from collections.abc import Mapping
+from enum import Enum
+from typing import Any, Literal, TypedDict, overload
+
+class Header(str, Enum):
+    REQUEST_ID = "x-request-id"
+
+def with_headers(*, extra_headers: Mapping[str, str] | None = None) -> None: ...
+def valid_headers(request_id: str) -> None:
+    kwargs: dict[str, Any] = {
+        "extra_headers": {Header.REQUEST_ID: request_id},
+    }
+    with_headers(**kwargs)
+
+def invalid_headers() -> None:
+    kwargs: dict[str, Any] = {
+        "extra_headers": {Header.REQUEST_ID: 1},
+    }
+    with_headers(**kwargs)  # error: [invalid-argument-type]
+
+def with_optional_headers(*, extra_headers: Mapping[str, str] | None = None, other: str = "") -> None: ...
+def invalid_headers_with_optional() -> None:
+    kwargs: dict[str, Any] = {
+        "extra_headers": {Header.REQUEST_ID: 1},
+    }
+    with_optional_headers(**kwargs)  # error: [invalid-argument-type]
+
+def takes_x(*, x: int) -> None: ...
+def invalid_key_type() -> None:
+    kwargs: dict[int | str, Any] = {"x": 1, 1: 2}
+    takes_x(**kwargs)  # error: [invalid-argument-type]
+
+@overload
+def overloaded_context(a: int, *, x: list[int]) -> int: ...
+@overload
+def overloaded_context(a: str, *, x: list[Any]) -> str: ...
+def overloaded_context(a: object, **kwargs: object) -> object: ...
+def invalid_overload_context() -> None:
+    kwargs: dict[str, object] = {"x": ["s"]}
+    overloaded_context(1, **kwargs)  # error: [no-matching-overload]
+
+class InputMessage(TypedDict):
+    role: Literal["user"]
+    content: str
+
+@overload
+def create(*, input: list[InputMessage]) -> int: ...
+@overload
+def create(*, input: str) -> str: ...
+def create(**kwargs: Any) -> object: ...
+def ok(content: str) -> None:
+    kwargs: dict[str, Any] = {
+        "input": [{"role": "user", "content": content}],
+    }
+    reveal_type(create(**kwargs))  # revealed: int
+
+def out_of_order(*, second: str, first: int, third: bool) -> None: ...
+def ok_out_of_order() -> None:
+    kwargs: dict[str, Any] = {
+        "first": 1,
+        "second": "s",
+        "third": True,
+    }
+    out_of_order(**kwargs)
+
+class OutOfOrderKwargs(TypedDict):
+    first: int
+    second: str
+    third: bool
+
+def ok_typed_dict_out_of_order(kwargs: OutOfOrderKwargs) -> None:
+    out_of_order(**kwargs)
+```

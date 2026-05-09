@@ -50,7 +50,9 @@ use crate::types::signatures::{
     PartialApplication, PartialSignatureApplication,
 };
 use crate::types::tuple::{TupleLength, TupleSpec, TupleType};
-use crate::types::typed_dict::extract_unpacked_typed_dict_keys_from_value_type;
+use crate::types::typed_dict::{
+    extract_unpacked_typed_dict_keys_from_value_type, synthesized_typed_dict_type_from_fields,
+};
 use crate::types::typevar::BoundTypeVarIdentity;
 use crate::types::{
     BoundMethodType, BoundTypeVarInstance, CallableType, CallableTypes, ClassLiteral,
@@ -4513,6 +4515,32 @@ fn validate_keyword_unpack_key_type<'db>(
     }
 }
 
+/// Return the original mapping value type from a synthetic `dict & TypedDict` splat.
+fn unpacked_typed_dict_fallback_value_type<'db>(
+    db: &'db dyn Db,
+    argument_type: Type<'db>,
+) -> Option<Type<'db>> {
+    let mut value_tys = Vec::new();
+
+    let Type::Intersection(intersection) = argument_type else {
+        return None;
+    };
+
+    for &element in intersection.positive(db) {
+        if !matches!(element, Type::TypedDict(_))
+            && let Some((_, value_ty)) = element.unpack_keys_and_items(db)
+        {
+            value_tys.push(value_ty);
+        }
+    }
+
+    match value_tys.as_slice() {
+        [] => None,
+        [value_ty] => Some(*value_ty),
+        _ => Some(IntersectionType::from_elements(db, value_tys)),
+    }
+}
+
 impl<'a, 'db> ArgumentTypeChecker<'a, 'db> {
     #[expect(clippy::too_many_arguments)]
     fn new(
@@ -4967,8 +4995,7 @@ impl<'a, 'db> ArgumentTypeChecker<'a, 'db> {
                     argument_index,
                     adjusted_argument_index,
                     argument,
-                    // Splatted arguments are inferred without type context.
-                    argument_types.get_default().unwrap_or(Type::unknown()),
+                    self.keyword_variadic_argument_type(argument_index, argument_types),
                 ),
                 _ => {
                     // If the argument isn't splatted, just check its type directly.
@@ -5008,6 +5035,37 @@ impl<'a, 'db> ArgumentTypeChecker<'a, 'db> {
             // Here, no arguments match the `ParamSpec` parameter, but `P` specializes to `(x: int)`,
             // so we need to perform a sub-call with no arguments.
             self.evaluate_paramspec_sub_call(constraints, None, paramspec);
+        }
+    }
+
+    /// Return the `**kwargs` type inferred for this overload's matched keyword fields.
+    fn keyword_variadic_argument_type(
+        &self,
+        argument_index: usize,
+        argument_types: &CallArgumentTypes<'db>,
+    ) -> Type<'db> {
+        let parameters = self.signature.parameters();
+        let context_ty = synthesized_typed_dict_type_from_fields(
+            self.db,
+            self.argument_matches[argument_index]
+                .parameters
+                .iter()
+                .filter_map(|parameter_index| {
+                    let parameter = &parameters[*parameter_index];
+                    if parameter.is_keyword_variadic() {
+                        None
+                    } else {
+                        parameter
+                            .keyword_name()
+                            .map(|name| (name.clone(), parameter.annotated_type()))
+                    }
+                }),
+        );
+
+        if let Some(context_ty) = context_ty {
+            argument_types.get_for_declared_type(context_ty)
+        } else {
+            argument_types.get_default().unwrap_or(Type::unknown())
         }
     }
 
@@ -5223,19 +5281,58 @@ impl<'a, 'db> ArgumentTypeChecker<'a, 'db> {
         if let Some(unpacked_keys) =
             extract_unpacked_typed_dict_keys_from_value_type(self.db, argument_type)
         {
-            for (argument_type, parameter_index) in unpacked_keys
-                .values()
-                .map(|unpacked_key| unpacked_key.value_ty)
-                .zip(&self.argument_matches[argument_index].parameters)
-            {
+            let matched_parameters = &self.argument_matches[argument_index].parameters;
+            let keyword_variadic = matched_parameters.iter().copied().find(|parameter_index| {
+                self.signature.parameters()[*parameter_index].is_keyword_variadic()
+            });
+
+            for (name, unpacked_key) in &unpacked_keys {
+                let parameter_index = matched_parameters
+                    .iter()
+                    .copied()
+                    .find(|parameter_index| {
+                        let parameter = &self.signature.parameters()[*parameter_index];
+                        !parameter.is_keyword_variadic() && parameter.keyword_name() == Some(name)
+                    })
+                    .or(keyword_variadic);
+
+                let Some(parameter_index) = parameter_index else {
+                    continue;
+                };
+
                 self.check_argument_type(
                     constraints,
                     argument_index,
                     adjusted_argument_index,
                     argument,
-                    argument_type,
-                    *parameter_index,
+                    unpacked_key.value_ty,
+                    parameter_index,
                 );
+            }
+
+            let fallback_value_type =
+                unpacked_typed_dict_fallback_value_type(self.db, argument_type)
+                    .filter(|ty| !ty.is_dynamic());
+
+            if let Some(fallback_value_type) = fallback_value_type {
+                for parameter_index in matched_parameters.iter().copied() {
+                    let parameter = &self.signature.parameters()[parameter_index];
+                    if parameter
+                        .keyword_name()
+                        .is_some_and(|name| unpacked_keys.contains_key(name))
+                    {
+                        continue;
+                    }
+
+                    self.check_argument_type(
+                        constraints,
+                        argument_index,
+                        adjusted_argument_index,
+                        argument,
+                        fallback_value_type,
+                        parameter_index,
+                    );
+                }
             }
 
             return;
