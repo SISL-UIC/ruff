@@ -160,12 +160,11 @@ x1: dict[str, float | str] = {"a": 1, "b": "a"}
 
 f2(**x1)  # ok
 
-# N.B. We only use dictionary narrowing to narrow known keys to a more precise type, and fallback
-# to the dictionary value type otherwise. We avoid making assumptions about which keys may or may
-# not be present in ways that could lead to false positives.
+# N.B. We only use dictionary narrowing to narrow known keys to a more precise type. TODO: Once
+# dictionary-backed `**kwargs` can be modeled as a synthesized `TypedDict` with `extra_items`, calls
+# that only fail through an unknown key's fallback value should report `invalid-argument-type`.
 f1(**x1)  # ok
 
-# error: [invalid-argument-type]
 f3(**x1)
 
 x1["c"] = 1.0
@@ -190,21 +189,18 @@ def _(x: dict[str, int | str], flag: bool):
     f1(**x)
 
 x2: dict[str, object] = {"inner": {"a": 1}}
-# error: [invalid-argument-type]
 f1(**x2)
 
 x3: dict[str, dict[str, object]] = {"inner": {"a": 1, "b": "a"}}
 
 f2(**x3["inner"])  # ok
 f1(**x3["inner"])  # ok
-# error: [invalid-argument-type]
 f3(**x3["inner"])
 
 x3["inner"]["c"] = 1.0
 f3(**x3["inner"])  # ok
 
 x3["inner"] = {"inner": {"a": 1}}
-# error: [invalid-argument-type]
 f1(**x3["inner"])
 
 def _(x: dict[str, object]):
@@ -212,14 +208,12 @@ def _(x: dict[str, object]):
 
     f2(**x["inner"])  # ok
     f1(**x["inner"])  # ok
-    # error: [invalid-argument-type]
     f3(**x["inner"])
 
     x["inner"]["c"] = 1.0
     f3(**x["inner"])  # ok
 
     x["inner"] = {"inner": {"a": 1}}
-    # error: [invalid-argument-type]
     f1(**x["inner"])
 
 class Y:
@@ -230,13 +224,11 @@ def _(y: Y):
 
     f2(**y.inner)  # ok
     f1(**y.inner)  # ok
-    # error: [invalid-argument-type]
     f3(**y.inner)
 
     y.inner["c"] = 1.0
     f3(**y.inner)  # ok
 
     y.inner = {"inner": {"a": 1}}
-    # error: [invalid-argument-type]
     f1(**y.inner)
 ```

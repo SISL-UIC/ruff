@@ -1753,6 +1753,21 @@ def invalid_key_type() -> None:
     kwargs: dict[int | str, Any] = {"x": 1, 1: 2}
     takes_x(**kwargs)  # error: [invalid-argument-type]
 
+def extra_item_keyword_only(*, known: int, extra: str = "") -> None: ...
+def extra_item_keyword_variadic(*, known: int, **kwargs: str) -> None: ...
+def deferred_extra_item_checks() -> None:
+    kwargs: dict[str, int] = {"known": 1}
+
+    # TODO: Once dictionary-backed `**kwargs` can be modeled as a synthesized `TypedDict` with
+    # `extra_items=int`, this should be an invalid-argument-type error because the open mapping
+    # may provide `extra: int` to `extra: str`.
+    extra_item_keyword_only(**kwargs)
+
+    # TODO: Once dictionary-backed `**kwargs` can be modeled as a synthesized `TypedDict` with
+    # `extra_items=int`, this should be an invalid-argument-type error because additional keys
+    # should be checked against `**kwargs: str`.
+    extra_item_keyword_variadic(**kwargs)
+
 @overload
 def overloaded_context(a: int, *, x: list[int]) -> int: ...
 @overload

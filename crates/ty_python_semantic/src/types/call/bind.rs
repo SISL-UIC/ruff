@@ -4515,32 +4515,6 @@ fn validate_keyword_unpack_key_type<'db>(
     }
 }
 
-/// Return the original mapping value type from a synthetic `dict & TypedDict` splat.
-fn unpacked_typed_dict_fallback_value_type<'db>(
-    db: &'db dyn Db,
-    argument_type: Type<'db>,
-) -> Option<Type<'db>> {
-    let mut value_tys = Vec::new();
-
-    let Type::Intersection(intersection) = argument_type else {
-        return None;
-    };
-
-    for &element in intersection.positive(db) {
-        if !matches!(element, Type::TypedDict(_))
-            && let Some((_, value_ty)) = element.unpack_keys_and_items(db)
-        {
-            value_tys.push(value_ty);
-        }
-    }
-
-    match value_tys.as_slice() {
-        [] => None,
-        [value_ty] => Some(*value_ty),
-        _ => Some(IntersectionType::from_elements(db, value_tys)),
-    }
-}
-
 impl<'a, 'db> ArgumentTypeChecker<'a, 'db> {
     #[expect(clippy::too_many_arguments)]
     fn new(
@@ -5308,31 +5282,6 @@ impl<'a, 'db> ArgumentTypeChecker<'a, 'db> {
                     unpacked_key.value_ty,
                     parameter_index,
                 );
-            }
-
-            let fallback_value_type =
-                unpacked_typed_dict_fallback_value_type(self.db, argument_type)
-                    .filter(|ty| !ty.is_dynamic());
-
-            if let Some(fallback_value_type) = fallback_value_type {
-                for parameter_index in matched_parameters.iter().copied() {
-                    let parameter = &self.signature.parameters()[parameter_index];
-                    if parameter
-                        .keyword_name()
-                        .is_some_and(|name| unpacked_keys.contains_key(name))
-                    {
-                        continue;
-                    }
-
-                    self.check_argument_type(
-                        constraints,
-                        argument_index,
-                        adjusted_argument_index,
-                        argument,
-                        fallback_value_type,
-                        parameter_index,
-                    );
-                }
             }
 
             return;
