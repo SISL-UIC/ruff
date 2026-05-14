@@ -277,6 +277,27 @@ def _(x: Literal["foo", "bar", 42, b"foo"] | bool | complex):
             reveal_type(x)  # revealed: Literal["bar"] | (int & ~Literal[42]) | float | complex
 ```
 
+## Value patterns with attribute subjects
+
+```py
+from typing import Literal
+
+class A:
+    tag: Literal["a"]
+
+class B:
+    tag: Literal["b"]
+
+def _(x: A | B):
+    match x.tag:
+        case "c":
+            reveal_type(x)  # revealed: Never
+        case "a":
+            reveal_type(x)  # revealed: A
+        case _:
+            reveal_type(x)  # revealed: B
+```
+
 ## Value patterns with guard
 
 ```py

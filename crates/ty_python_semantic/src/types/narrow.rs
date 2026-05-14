@@ -1454,6 +1454,33 @@ impl<'db, 'ast> NarrowingConstraintsBuilder<'db, 'ast> {
             if let ast::Expr::Subscript(subscript) = comparators[0].expression_value() {
                 narrow_subscript(subscript, inference.expression_type(&**left));
             }
+
+            let mut narrow_attribute = |attribute: &ast::ExprAttribute, other_type: Type<'db>| {
+                let value_type = inference.expression_type(&*attribute.value);
+
+                if let Some((place, constraint)) = self.narrow_attribute_literal(
+                    value_type,
+                    &attribute.value,
+                    attribute.attr.as_str(),
+                    other_type,
+                    constrain_with_equality,
+                ) {
+                    constraints
+                        .entry(place)
+                        .and_modify(|existing| {
+                            *existing = existing.merge_constraint_and(constraint.clone());
+                        })
+                        .or_insert(constraint);
+                }
+            };
+
+            if let ast::Expr::Attribute(attribute) = left.expression_value() {
+                narrow_attribute(attribute, inference.expression_type(&comparators[0]));
+            }
+
+            if let ast::Expr::Attribute(attribute) = comparators[0].expression_value() {
+                narrow_attribute(attribute, inference.expression_type(&**left));
+            }
         }
 
         // Narrow unions and intersections of `TypedDict` in cases where required keys are
@@ -1949,6 +1976,17 @@ impl<'db, 'ast> NarrowingConstraintsBuilder<'db, 'ast> {
             ) {
                 constraints.insert(place, constraint);
             }
+        } else if let ast::Expr::Attribute(attribute) = subject_node {
+            let inference = infer_expression_types(self.db, subject, TypeContext::default());
+            if let Some((place, constraint)) = self.narrow_attribute_literal(
+                inference.expression_type(&*attribute.value),
+                &attribute.value,
+                attribute.attr.as_str(),
+                value_ty,
+                is_positive,
+            ) {
+                constraints.insert(place, constraint);
+            }
         }
 
         Some(constraints)
@@ -2172,6 +2210,56 @@ impl<'db, 'ast> NarrowingConstraintsBuilder<'db, 'ast> {
             None
         }
     }
+
+    /// Narrow tagged unions based on literal-valued attributes.
+    ///
+    /// Given an attribute expression like `union.tag`, where each union member has a literal
+    /// `tag`, and a comparison value like `"foo"`, this method creates a constraint on `union`
+    /// itself.
+    fn narrow_attribute_literal(
+        &self,
+        attribute_value_type: Type<'db>,
+        attribute_value_expr: &ast::Expr,
+        attribute: &str,
+        rhs_type: Type<'db>,
+        constrain_with_equality: bool,
+    ) -> Option<(ScopedPlaceId, NarrowingConstraint<'db>)> {
+        let Type::Union(union) = attribute_value_type.resolve_type_alias(self.db) else {
+            return None;
+        };
+
+        if !is_supported_tag_literal(rhs_type) {
+            return None;
+        }
+
+        if constrain_with_equality
+            && !all_matching_attribute_members_have_literal_types(
+                self.db,
+                Type::Union(union),
+                attribute,
+            )
+        {
+            return None;
+        }
+
+        let filtered = union.filter(self.db, |elem| {
+            attribute_member_type(self.db, *elem, attribute).is_none_or(|member_ty| {
+                if constrain_with_equality {
+                    !member_ty.is_disjoint_from(self.db, rhs_type)
+                } else {
+                    !member_ty.is_subtype_of(self.db, rhs_type)
+                }
+            })
+        });
+
+        if filtered != Type::Union(union) {
+            let value_place_expr = PlaceExpr::try_from_expr(attribute_value_expr)?;
+            let place = self.expect_place(&value_place_expr);
+            Some((place, NarrowingConstraint::replacement(filtered)))
+        } else {
+            None
+        }
+    }
 }
 
 // Return true if the given type is a `TypedDict` or a union or intersection that includes at least
@@ -2230,6 +2318,40 @@ fn is_supported_tag_literal(ty: Type) -> bool {
                 | LiteralValueTypeKind::Int(_)
         )
     )
+}
+
+fn attribute_member_type<'db>(
+    db: &'db dyn Db,
+    ty: Type<'db>,
+    attribute: &str,
+) -> Option<Type<'db>> {
+    ty.member(db, attribute).ignore_possibly_undefined()
+}
+
+fn all_matching_attribute_members_have_literal_types<'db>(
+    db: &'db dyn Db,
+    ty: Type<'db>,
+    attribute: &str,
+) -> bool {
+    match ty.resolve_type_alias(db) {
+        Type::Union(union) => union
+            .elements(db)
+            .iter()
+            .all(|union_member_ty| {
+                all_matching_attribute_members_have_literal_types(db, *union_member_ty, attribute)
+            }),
+        Type::Intersection(intersection) => intersection
+            .positive(db)
+            .iter()
+            .all(|intersection_member_ty| {
+                all_matching_attribute_members_have_literal_types(
+                    db,
+                    *intersection_member_ty,
+                    attribute,
+                )
+            }),
+        ty => attribute_member_type(db, ty, attribute).is_none_or(is_supported_tag_literal),
+    }
 }
 
 // Return true if the given type is a `TypedDict` whose `field_name` field has a supported tag literal

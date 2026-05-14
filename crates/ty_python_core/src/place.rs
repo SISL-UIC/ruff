@@ -738,6 +738,14 @@ impl<'db, 'a> PossiblyNarrowedPlacesBuilder<'db, 'a> {
                     places.insert(place);
                 }
             }
+            // x.attr == Literal[...] can narrow x for discriminated unions.
+            ast::Expr::Attribute(attribute) => {
+                if let Some(place_expr) = PlaceExpr::try_from_expr(&attribute.value)
+                    && let Some(place) = self.places.place_id((&place_expr).into())
+                {
+                    places.insert(place);
+                }
+            }
             _ => {}
         }
     }
@@ -762,6 +770,16 @@ impl<'db, 'a> PossiblyNarrowedPlacesBuilder<'db, 'a> {
         // For subscript subjects, the subscript base can also be narrowed (TypedDict/tuple narrowing)
         if let ast::Expr::Subscript(subscript) = subject_node {
             if let Some(place_expr) = PlaceExpr::try_from_expr(&subscript.value) {
+                if let Some(place) = self.places.place_id((&place_expr).into()) {
+                    places.insert(place);
+                }
+            }
+        }
+
+        // For attribute subjects, the attribute base can also be narrowed
+        // (discriminated union narrowing).
+        if let ast::Expr::Attribute(attribute) = subject_node {
+            if let Some(place_expr) = PlaceExpr::try_from_expr(&attribute.value) {
                 if let Some(place) = self.places.place_id((&place_expr).into()) {
                     places.insert(place);
                 }
