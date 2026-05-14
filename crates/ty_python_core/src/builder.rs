@@ -1630,11 +1630,26 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
             ast::Pattern::MatchMapping(pattern) => {
                 // `case {}` and `case {**rest}` match every mapping, while keyed mapping
                 // patterns are refutable (`case {"x": _}` may fail for some mappings).
-                PatternPredicateKind::Mapping(if pattern.keys.is_empty() {
-                    ClassPatternKind::Irrefutable
-                } else {
-                    ClassPatternKind::Refutable
-                })
+                let entries = pattern
+                    .keys
+                    .iter()
+                    .zip(&pattern.patterns)
+                    .map(|(key, pattern)| {
+                        (
+                            self.add_standalone_expression(key),
+                            self.predicate_kind(pattern),
+                        )
+                    })
+                    .collect();
+
+                PatternPredicateKind::Mapping(
+                    if pattern.keys.is_empty() {
+                        ClassPatternKind::Irrefutable
+                    } else {
+                        ClassPatternKind::Refutable
+                    },
+                    entries,
+                )
             }
             ast::Pattern::MatchSequence(pattern) => {
                 // `case [*rest]` matches every sequence, while all other sequence patterns

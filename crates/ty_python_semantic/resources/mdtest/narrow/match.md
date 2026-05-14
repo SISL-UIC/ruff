@@ -200,6 +200,29 @@ def test_match_refutable(x: dict | int) -> None:
             reveal_type(x)  # revealed: dict[Unknown, Unknown] | int
 ```
 
+## Mapping patterns with `TypedDict` discriminants
+
+```py
+from typing import Literal, TypedDict
+
+class IntValue(TypedDict):
+    type: Literal["Int"]
+    value: int
+
+class StrValue(TypedDict):
+    type: Literal["Str"]
+    value: str
+
+def _(x: IntValue | StrValue | int):
+    match x:
+        case {"type": "Int"}:
+            reveal_type(x)  # revealed: IntValue | (int & Top[Mapping[Unknown, object]])
+        case {"type": "Str"}:
+            reveal_type(x)  # revealed: StrValue | (int & Top[Mapping[Unknown, object]])
+        case _:
+            reveal_type(x)  # revealed: int
+```
+
 ## Sequence patterns
 
 ```py

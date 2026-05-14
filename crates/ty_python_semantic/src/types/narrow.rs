@@ -808,8 +808,8 @@ impl<'db, 'ast> NarrowingConstraintsBuilder<'db, 'ast> {
             PatternPredicateKind::Class(cls, kind) => {
                 self.evaluate_match_pattern_class(subject, *cls, *kind, is_positive)
             }
-            PatternPredicateKind::Mapping(kind) => {
-                self.evaluate_match_pattern_mapping(subject, *kind, is_positive)
+            PatternPredicateKind::Mapping(kind, entries) => {
+                self.evaluate_match_pattern_mapping(subject, *kind, entries, is_positive)
             }
             PatternPredicateKind::Sequence(kind) => {
                 self.evaluate_match_pattern_sequence(subject, *kind, is_positive)
@@ -1878,27 +1878,58 @@ impl<'db, 'ast> NarrowingConstraintsBuilder<'db, 'ast> {
         &mut self,
         subject: Expression<'db>,
         kind: ClassPatternKind,
+        entries: &[(Expression<'db>, PatternPredicateKind<'db>)],
         is_positive: bool,
     ) -> Option<NarrowingConstraints<'db>> {
-        if !kind.is_irrefutable() && !is_positive {
+        if !kind.is_irrefutable() && !is_positive && entries.is_empty() {
             return None;
         }
 
-        let subject = PlaceExpr::try_from_expr(subject.node_ref(self.db).node(self.module))?;
-        let place = self.expect_place(&subject);
+        let subject_node = subject.node_ref(self.db).node(self.module);
+        let subject_place_expr = PlaceExpr::try_from_expr(subject_node)?;
+        let place = self.expect_place(&subject_place_expr);
 
-        let mapping_type = ClassInfoConstraintFunction::IsInstance
-            .generate_constraint(
-                self.db,
-                KnownClass::Mapping.to_class_literal(self.db),
-                is_positive,
-            )?
-            .negate_if(self.db, !is_positive);
+        let mut constraints = NarrowingConstraints::default();
 
-        Some(NarrowingConstraints::from_iter([(
-            place,
-            NarrowingConstraint::intersection(mapping_type),
-        )]))
+        if kind.is_irrefutable() || is_positive {
+            let mapping_type = ClassInfoConstraintFunction::IsInstance
+                .generate_constraint(
+                    self.db,
+                    KnownClass::Mapping.to_class_literal(self.db),
+                    is_positive,
+                )?
+                .negate_if(self.db, !is_positive);
+
+            constraints.insert(place, NarrowingConstraint::intersection(mapping_type));
+        }
+
+        let subject_ty = infer_same_file_expression_type(self.db, subject, TypeContext::default());
+        if !entries.is_empty() {
+            for (key, value_pattern) in entries {
+                let key_ty = infer_same_file_expression_type(self.db, *key, TypeContext::default());
+                let Some(value_ty) = self.literal_pattern_type(value_pattern) else {
+                    continue;
+                };
+                let Some((place, constraint)) = self.narrow_typeddict_subscript(
+                    subject_ty,
+                    subject_node,
+                    key_ty,
+                    value_ty,
+                    is_positive,
+                ) else {
+                    continue;
+                };
+
+                constraints
+                    .entry(place)
+                    .and_modify(|existing| {
+                        *existing = existing.merge_constraint_and(constraint.clone());
+                    })
+                    .or_insert(constraint);
+            }
+        }
+
+        Some(constraints)
     }
 
     fn evaluate_match_pattern_sequence(
@@ -2211,6 +2242,25 @@ impl<'db, 'ast> NarrowingConstraintsBuilder<'db, 'ast> {
         }
     }
 
+    fn literal_pattern_type(&self, pattern: &PatternPredicateKind<'db>) -> Option<Type<'db>> {
+        match pattern {
+            PatternPredicateKind::Singleton(singleton) => Some(singleton_type(self.db, *singleton)),
+            PatternPredicateKind::Value(value) => Some(infer_same_file_expression_type(
+                self.db,
+                *value,
+                TypeContext::default(),
+            )),
+            PatternPredicateKind::Or(patterns) => UnionType::try_from_elements(
+                self.db,
+                patterns
+                    .iter()
+                    .map(|pattern| self.literal_pattern_type(pattern)),
+            ),
+            PatternPredicateKind::As(Some(pattern), _) => self.literal_pattern_type(pattern),
+            _ => None,
+        }
+    }
+
     /// Narrow tagged unions based on literal-valued attributes.
     ///
     /// Given an attribute expression like `union.tag`, where each union member has a literal
@@ -2320,6 +2370,14 @@ fn is_supported_tag_literal(ty: Type) -> bool {
     )
 }
 
+fn singleton_type(db: &dyn Db, singleton: ast::Singleton) -> Type<'_> {
+    match singleton {
+        ast::Singleton::None => Type::none(db),
+        ast::Singleton::True => Type::bool_literal(true),
+        ast::Singleton::False => Type::bool_literal(false),
+    }
+}
+
 fn attribute_member_type<'db>(
     db: &'db dyn Db,
     ty: Type<'db>,
@@ -2334,22 +2392,21 @@ fn all_matching_attribute_members_have_literal_types<'db>(
     attribute: &str,
 ) -> bool {
     match ty.resolve_type_alias(db) {
-        Type::Union(union) => union
-            .elements(db)
-            .iter()
-            .all(|union_member_ty| {
-                all_matching_attribute_members_have_literal_types(db, *union_member_ty, attribute)
-            }),
-        Type::Intersection(intersection) => intersection
-            .positive(db)
-            .iter()
-            .all(|intersection_member_ty| {
-                all_matching_attribute_members_have_literal_types(
-                    db,
-                    *intersection_member_ty,
-                    attribute,
-                )
-            }),
+        Type::Union(union) => union.elements(db).iter().all(|union_member_ty| {
+            all_matching_attribute_members_have_literal_types(db, *union_member_ty, attribute)
+        }),
+        Type::Intersection(intersection) => {
+            intersection
+                .positive(db)
+                .iter()
+                .all(|intersection_member_ty| {
+                    all_matching_attribute_members_have_literal_types(
+                        db,
+                        *intersection_member_ty,
+                        attribute,
+                    )
+                })
+        }
         ty => attribute_member_type(db, ty, attribute).is_none_or(is_supported_tag_literal),
     }
 }

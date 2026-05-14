@@ -267,7 +267,7 @@ fn pattern_kind_to_type<'db>(db: &'db dyn Db, kind: &PatternPredicateKind<'db>) 
                 Type::Never
             }
         }
-        PatternPredicateKind::Mapping(kind) => {
+        PatternPredicateKind::Mapping(kind, _) => {
             if kind.is_irrefutable() {
                 mapping_pattern_type(db)
             } else {
@@ -294,9 +294,9 @@ fn pattern_kind_to_type<'db>(db: &'db dyn Db, kind: &PatternPredicateKind<'db>) 
 
 fn class_pattern_type<'db>(db: &'db dyn Db, class_expr: Expression<'db>) -> Option<Type<'db>> {
     match infer_expression_type(db, class_expr, TypeContext::default()) {
-        Type::ClassLiteral(class) => Some(
-            Type::instance(db, class.top_materialization(db)).top_materialization(db),
-        ),
+        Type::ClassLiteral(class) => {
+            Some(Type::instance(db, class.top_materialization(db)).top_materialization(db))
+        }
         Type::SpecialForm(SpecialFormType::Callable) => {
             Some(Type::Callable(CallableType::unknown(db)).top_materialization(db))
         }
@@ -846,7 +846,7 @@ fn analyze_single_pattern_predicate_kind<'db>(
                 }
             })
         }
-        PatternPredicateKind::Mapping(kind) => {
+        PatternPredicateKind::Mapping(kind, _) => {
             let mapping_ty = mapping_pattern_type(db);
             if subject_ty.is_subtype_of(db, mapping_ty) {
                 if kind.is_irrefutable() {
