@@ -2441,6 +2441,10 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                 let class_instance_ty = class_pattern_instance_type(self.db(), subject_ty, class);
                 self.intersect_types(subject_ty, class_instance_ty)
             }
+            Type::SpecialForm(SpecialFormType::Callable) => self.intersect_types(
+                subject_ty,
+                Type::Callable(CallableType::unknown(self.db())).top_materialization(self.db()),
+            ),
             dynamic @ Type::Dynamic(_) => dynamic,
             _ => subject_ty,
         }
@@ -2537,7 +2541,9 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                     protocol_class,
                 );
             }
-        } else if !cls_ty.is_assignable_to(self.db(), KnownClass::Type.to_instance(self.db())) {
+        } else if cls_ty != Type::SpecialForm(SpecialFormType::Callable)
+            && !cls_ty.is_assignable_to(self.db(), KnownClass::Type.to_instance(self.db()))
+        {
             report_invalid_class_match_pattern(&self.context, &*pattern.cls, cls_ty);
         }
     }

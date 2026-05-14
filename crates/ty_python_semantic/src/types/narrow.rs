@@ -1832,6 +1832,11 @@ impl<'db, 'ast> NarrowingConstraintsBuilder<'db, 'ast> {
         let narrowed_type = match class_type {
             Type::ClassLiteral(class) => class_pattern_instance_type(self.db, subject_ty, class)
                 .negate_if(self.db, !is_positive),
+            Type::SpecialForm(SpecialFormType::Callable) => {
+                Type::Callable(CallableType::unknown(self.db))
+                    .top_materialization(self.db)
+                    .negate_if(self.db, !is_positive)
+            }
             dynamic @ Type::Dynamic(_) => dynamic,
             _ => return None,
         };

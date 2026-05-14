@@ -198,8 +198,9 @@ use crate::{
     dunder_all::dunder_all_names,
     place::{DefinedPlace, Definedness, Place, RequiresExplicitReExport, imported_symbol},
     types::{
-        CallableTypes, IntersectionBuilder, KnownClass, NarrowingConstraint, Type, TypeContext,
-        UnionBuilder, UnionType, infer_expression_type, infer_narrowing_constraint,
+        CallableType, CallableTypes, IntersectionBuilder, KnownClass, NarrowingConstraint,
+        SpecialFormType, Type, TypeContext, UnionBuilder, UnionType, infer_expression_type,
+        infer_narrowing_constraint,
     },
 };
 use ruff_text_size::TextRange;
@@ -208,6 +209,7 @@ use ty_python_core::{
     BindingWithConstraints, DeclarationWithConstraint, DeclarationsIterator, FileScopeId,
     SemanticIndex, Truthiness, UseDefMap,
     definition::DefinitionState,
+    expression::Expression,
     place::ScopedPlaceId,
     place_table,
     predicate::{
@@ -260,10 +262,7 @@ fn pattern_kind_to_type<'db>(db: &'db dyn Db, kind: &PatternPredicateKind<'db>) 
         }
         PatternPredicateKind::Class(class_expr, kind) => {
             if kind.is_irrefutable() {
-                infer_expression_type(db, *class_expr, TypeContext::default())
-                    .to_instance(db)
-                    .unwrap_or(Type::Never)
-                    .top_materialization(db)
+                class_pattern_type(db, *class_expr).unwrap_or(Type::Never)
             } else {
                 Type::Never
             }
@@ -290,6 +289,18 @@ fn pattern_kind_to_type<'db>(db: &'db dyn Db, kind: &PatternPredicateKind<'db>) 
             .map(|p| pattern_kind_to_type(db, p))
             .unwrap_or_else(Type::object),
         PatternPredicateKind::Unsupported => Type::Never,
+    }
+}
+
+fn class_pattern_type<'db>(db: &'db dyn Db, class_expr: Expression<'db>) -> Option<Type<'db>> {
+    match infer_expression_type(db, class_expr, TypeContext::default()) {
+        Type::ClassLiteral(class) => Some(
+            Type::instance(db, class.top_materialization(db)).top_materialization(db),
+        ),
+        Type::SpecialForm(SpecialFormType::Callable) => {
+            Some(Type::Callable(CallableType::unknown(db)).top_materialization(db))
+        }
+        _ => None,
     }
 }
 
@@ -816,9 +827,7 @@ fn analyze_single_pattern_predicate_kind<'db>(
             truthiness
         }
         PatternPredicateKind::Class(class_expr, kind) => {
-            let class_ty = infer_expression_type(db, *class_expr, TypeContext::default())
-                .as_class_literal()
-                .map(|class| Type::instance(db, class.top_materialization(db)));
+            let class_ty = class_pattern_type(db, *class_expr);
 
             class_ty.map_or(Truthiness::Ambiguous, |class_ty| {
                 if subject_ty.is_subtype_of(db, class_ty) {
