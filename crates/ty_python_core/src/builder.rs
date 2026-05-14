@@ -1654,12 +1654,24 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
             ast::Pattern::MatchSequence(pattern) => {
                 // `case [*rest]` matches every sequence, while all other sequence patterns
                 // are refutable because they impose a minimum and/or exact length.
+                let star_position = pattern
+                    .patterns
+                    .iter()
+                    .position(|pattern| matches!(pattern, ast::Pattern::MatchStar(_)));
+                let elements = pattern
+                    .patterns
+                    .iter()
+                    .map(|pattern| self.predicate_kind(pattern))
+                    .collect();
+
                 PatternPredicateKind::Sequence(
                     if matches!(pattern.patterns.as_slice(), [ast::Pattern::MatchStar(_)]) {
                         ClassPatternKind::Irrefutable
                     } else {
                         ClassPatternKind::Refutable
                     },
+                    star_position,
+                    elements,
                 )
             }
             ast::Pattern::MatchOr(pattern) => {

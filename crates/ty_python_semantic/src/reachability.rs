@@ -234,8 +234,19 @@ pub(crate) fn mapping_pattern_type(db: &dyn Db) -> Type<'_> {
 }
 
 pub(crate) fn sequence_pattern_type(db: &dyn Db) -> Type<'_> {
+    sequence_pattern_type_with_element(db, Type::object())
+}
+
+pub(crate) fn sequence_pattern_type_with_element<'db>(
+    db: &'db dyn Db,
+    element_ty: Type<'db>,
+) -> Type<'db> {
     IntersectionBuilder::new(db)
-        .add_positive(KnownClass::Sequence.to_instance(db).top_materialization(db))
+        .add_positive(
+            KnownClass::Sequence
+                .to_specialized_instance(db, &[element_ty])
+                .top_materialization(db),
+        )
         // `str`, `bytes`, and `bytearray` are sequences, but Python sequence
         // patterns explicitly do not match them or their subclasses.
         .add_negative(KnownClass::Str.to_instance(db))
@@ -274,8 +285,10 @@ fn pattern_kind_to_type<'db>(db: &'db dyn Db, kind: &PatternPredicateKind<'db>) 
                 Type::Never
             }
         }
-        PatternPredicateKind::Sequence(kind) => {
-            if kind.is_irrefutable() {
+        PatternPredicateKind::Sequence(kind, star_position, elements) => {
+            if let Some(sequence_ty) = sequence_pattern_tuple_type(db, *star_position, elements) {
+                sequence_ty
+            } else if kind.is_irrefutable() {
                 sequence_pattern_type(db)
             } else {
                 Type::Never
@@ -302,6 +315,23 @@ fn class_pattern_type<'db>(db: &'db dyn Db, class_expr: Expression<'db>) -> Opti
         }
         _ => None,
     }
+}
+
+fn sequence_pattern_tuple_type<'db>(
+    db: &'db dyn Db,
+    star_position: Option<usize>,
+    elements: &[PatternPredicateKind<'db>],
+) -> Option<Type<'db>> {
+    if star_position.is_some() {
+        return None;
+    }
+
+    Some(Type::heterogeneous_tuple(
+        db,
+        elements
+            .iter()
+            .map(|element| pattern_kind_to_type(db, element)),
+    ))
 }
 
 /// Go through the list of previous match cases, and accumulate a union of all types that were already
@@ -860,7 +890,7 @@ fn analyze_single_pattern_predicate_kind<'db>(
                 Truthiness::Ambiguous
             }
         }
-        PatternPredicateKind::Sequence(kind) => {
+        PatternPredicateKind::Sequence(kind, _, _) => {
             let sequence_ty = sequence_pattern_type(db);
             if subject_ty.is_subtype_of(db, sequence_ty) {
                 if kind.is_irrefutable() {

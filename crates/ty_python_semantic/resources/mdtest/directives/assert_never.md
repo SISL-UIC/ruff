@@ -236,4 +236,15 @@ def match_singletons_error(obj: Literal[1, "a"] | None):
         case _ as obj:
             # error: [type-assertion-failure] "Type `Literal["a"]` is not equivalent to `Never`"
             assert_never(obj)
+
+def tuple_match_exhaustive(month: int, year: int, by: Literal["month", "year"]) -> None:
+    match (month, year, by):
+        case (12, _, "month"):
+            pass
+        case (_, _, "year"):
+            pass
+        case (_, _, "month"):
+            pass
+        case (_, _, _) as unreachable:
+            assert_never(unreachable)
 ```

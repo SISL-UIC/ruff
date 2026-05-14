@@ -247,6 +247,104 @@ def test_match_star_excludes_text_and_bytes(x: str | bytes | bytearray | list[in
             reveal_type(x)  # revealed: list[int]
         case _:
             reveal_type(x)  # revealed: str | bytes | bytearray
+
+def fixed_sequence_pattern_subject(x: object) -> None:
+    match x:
+        case a, b:
+            reveal_type(x)  # revealed: Sequence[object] & ~str & ~bytes & ~bytearray
+
+def fixed_sequence_literal_subject(x: object) -> None:
+    match x:
+        case 1, 2:
+            reveal_type(x)  # revealed: Sequence[Literal[1, 2]] & ~str & ~bytes & ~bytearray
+
+def fixed_sequence_literal_bindings(x: object) -> None:
+    match x:
+        case 3 as a1, -3 as a2:
+            reveal_type(a1)  # revealed: Literal[3]
+            reveal_type(a2)  # revealed: Literal[-3]
+```
+
+## Sequence patterns with tuple subjects
+
+```py
+from typing import Literal
+from typing_extensions import assert_never
+
+def element_narrowing(x: tuple[int | str, int | str]) -> None:
+    match x:
+        case _, str():
+            reveal_type(x)  # revealed: tuple[int | str, str]
+        case _:
+            reveal_type(x)  # revealed: tuple[int | str, int]
+
+def length_narrowing(x: tuple[int] | tuple[int, int] | tuple[int, int, int]) -> None:
+    match x:
+        case (_, _):
+            reveal_type(x)  # revealed: tuple[int, int]
+        case _:
+            reveal_type(x)  # revealed: tuple[int] | tuple[int, int, int]
+
+def empty_length_narrowing(x: tuple[()] | tuple[int]) -> None:
+    match x:
+        case []:
+            reveal_type(x)  # revealed: tuple[()]
+        case _:
+            reveal_type(x)  # revealed: tuple[int]
+
+def tuple_subject_expression(a: int, b: str) -> None:
+    match a, b:
+        case 1, "hi":
+            reveal_type(a)  # revealed: Literal[1]
+            reveal_type(b)  # revealed: Literal["hi"]
+
+class A1: ...
+class A2: ...
+class B1: ...
+class B2: ...
+
+def tuple_subject_previous_patterns(a: A1 | A2, b: B1 | B2) -> None:
+    subject = a, b
+    match subject:
+        case A1(), B1():
+            reveal_type(subject)  # revealed: tuple[A1, B1]
+        case A1(), _:
+            reveal_type(subject)  # revealed: tuple[A1, B2 & ~B1]
+        case _:
+            reveal_type(subject)  # revealed: tuple[A2 & ~A1, B1 | B2]
+
+def tuple_or_int(value: int | tuple[int, int]) -> int:
+    match value:
+        case int(value):
+            return value
+        case (left, right):
+            return left + right
+        case unreachable:
+            assert_never(unreachable)
+
+def literal_exhaustive(month: int, year: int, by: Literal["month", "year"]):
+    match (month, year, by):
+        case (int(), int(), "month"):
+            pass
+        case (int(), int(), "year"):
+            pass
+        case unreachable:
+            reveal_type(unreachable)  # revealed: Never
+            assert_never(unreachable)
+
+def tuple_discriminated_bindings(
+    node: tuple[Literal["single"], tuple[int, str], tuple[int, str], tuple[int, str]]
+    | tuple[Literal["multi"], tuple[int, str], list[tuple[int, str]], tuple[int, str]],
+) -> None:
+    match node:
+        case ("single", leading, content, trailing):
+            reveal_type(leading)  # revealed: tuple[int, str]
+            reveal_type(content)  # revealed: tuple[int, str]
+            reveal_type(trailing)  # revealed: tuple[int, str]
+        case ("multi", leading, parts, trailing):
+            reveal_type(leading)  # revealed: tuple[int, str]
+            reveal_type(parts)  # revealed: list[tuple[int, str]]
+            reveal_type(trailing)  # revealed: tuple[int, str]
 ```
 
 ## Value patterns

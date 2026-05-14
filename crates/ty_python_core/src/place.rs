@@ -786,6 +786,19 @@ impl<'db, 'a> PossiblyNarrowedPlacesBuilder<'db, 'a> {
             }
         }
 
+        // For tuple subjects, fixed-length sequence patterns can narrow the element expressions.
+        if matches!(kind, PatternPredicateKind::Sequence(_, None, _))
+            && let ast::Expr::Tuple(tuple) = subject_node
+        {
+            for element in &tuple.elts {
+                if let Some(place_expr) = PlaceExpr::try_from_expr(element) {
+                    if let Some(place) = self.places.place_id((&place_expr).into()) {
+                        places.insert(place);
+                    }
+                }
+            }
+        }
+
         // Handle Or patterns by recursing into each alternative
         if let PatternPredicateKind::Or(predicates) = kind {
             for predicate in predicates {

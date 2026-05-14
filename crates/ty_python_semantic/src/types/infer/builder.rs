@@ -39,7 +39,6 @@ use crate::place::{
 };
 use crate::reachability::{
     ReachabilityConstraintsExtension, mapping_pattern_type, sequence_pattern_type,
-    type_excluded_by_patterns,
 };
 use crate::types::add_inferred_python_version_hint_to_diagnostic;
 use crate::types::call::bind::MatchingOverloadIndex;
@@ -116,7 +115,7 @@ use ty_python_core::expression::{Expression, ExpressionKind};
 use ty_python_core::narrowing_constraints::ConstraintKey;
 use ty_python_core::node_key::NodeKey;
 use ty_python_core::place::{PlaceExpr, PlaceExprRef};
-use ty_python_core::predicate::PatternPredicate;
+use ty_python_core::predicate::{PatternPredicate, PatternPredicateKind};
 use ty_python_core::scope::{FileScopeId, NodeWithScopeKind, NodeWithScopeRef, ScopeId, ScopeKind};
 use ty_python_core::symbol::{ScopedSymbolId, Symbol};
 use ty_python_core::{
@@ -2133,7 +2132,45 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         let subject_ty =
             self.get_or_infer_maybe_standalone_expression(subject, TypeContext::default());
 
-        let excluded_ty = type_excluded_by_patterns(self.db(), previous_pattern);
+        self.type_narrowed_by_previous_patterns(subject_ty, previous_pattern)
+    }
+
+    fn type_narrowed_by_previous_patterns(
+        &self,
+        subject_ty: Type<'db>,
+        mut predicate: Option<PatternPredicate<'db>>,
+    ) -> Type<'db> {
+        let mut predicates = vec![];
+        while let Some(current) = predicate {
+            if current.guard(self.db()).is_none() {
+                predicates.push(current);
+            }
+            predicate = current
+                .previous_predicate(self.db())
+                .map(|previous| *previous);
+        }
+
+        predicates
+            .into_iter()
+            .rev()
+            .fold(subject_ty, |ty, predicate| {
+                self.type_narrowed_by_pattern(ty, predicate.kind(self.db()))
+            })
+    }
+
+    fn type_narrowed_by_pattern(
+        &self,
+        subject_ty: Type<'db>,
+        kind: &PatternPredicateKind<'db>,
+    ) -> Type<'db> {
+        if let PatternPredicateKind::Sequence(_, star_position, elements) = kind
+            && let Some(narrowed) =
+                self.type_narrowed_by_sequence_pattern(subject_ty, *star_position, elements)
+        {
+            return narrowed;
+        }
+
+        let excluded_ty = self.pattern_kind_to_type_for_exclusion(kind);
         if excluded_ty.is_never() {
             subject_ty
         } else {
@@ -2141,6 +2178,181 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                 .add_positive(subject_ty)
                 .add_negative(excluded_ty)
                 .build()
+        }
+    }
+
+    fn type_narrowed_by_sequence_pattern(
+        &self,
+        subject_ty: Type<'db>,
+        star_position: Option<usize>,
+        elements: &[PatternPredicateKind<'db>],
+    ) -> Option<Type<'db>> {
+        match subject_ty.resolve_type_alias(self.db()) {
+            Type::Union(union) => Some(union.map(self.db(), |element| {
+                self.type_narrowed_by_single_sequence_pattern(*element, star_position, elements)
+                    .unwrap_or(*element)
+            })),
+            ty => self.type_narrowed_by_single_sequence_pattern(ty, star_position, elements),
+        }
+    }
+
+    fn type_narrowed_by_single_sequence_pattern(
+        &self,
+        ty: Type<'db>,
+        star_position: Option<usize>,
+        elements: &[PatternPredicateKind<'db>],
+    ) -> Option<Type<'db>> {
+        let tuple = ty.as_nominal_instance()?.tuple_spec(self.db())?;
+        let pattern_length = Self::sequence_pattern_length(star_position, elements.len());
+        let original_length = tuple.len();
+        let resized = tuple.resize(self.db(), pattern_length).ok()?;
+
+        if star_position.is_some()
+            || !Self::sequence_pattern_length_definitely_matches(pattern_length, original_length)
+        {
+            return Some(ty);
+        }
+
+        let Tuple::Fixed(fixed) = resized else {
+            return Some(ty);
+        };
+        let element_tys = fixed.iter_all_elements().collect::<Vec<_>>();
+
+        let mut alternatives = vec![];
+        let mut positive_prefix = element_tys.clone();
+
+        for (index, (&element_ty, pattern)) in element_tys.iter().zip(elements).enumerate() {
+            let pattern_ty = self.pattern_kind_to_type_for_exclusion(pattern);
+            if pattern_ty.is_never() {
+                return Some(ty);
+            }
+
+            if element_ty.is_subtype_of(self.db(), pattern_ty) {
+                positive_prefix[index] = element_ty;
+                continue;
+            }
+
+            if element_ty.is_disjoint_from(self.db(), pattern_ty) {
+                return Some(ty);
+            }
+
+            let mut alternative = positive_prefix.clone();
+            alternative[index] = IntersectionBuilder::new(self.db())
+                .add_positive(element_ty)
+                .add_negative(pattern_ty)
+                .build();
+            alternatives.push(Type::heterogeneous_tuple(self.db(), alternative));
+
+            positive_prefix[index] =
+                IntersectionType::from_two_elements(self.db(), element_ty, pattern_ty);
+        }
+
+        if alternatives.is_empty() {
+            Some(Type::Never)
+        } else {
+            Some(UnionType::from_elements(self.db(), alternatives))
+        }
+    }
+
+    fn pattern_kind_to_type_for_exclusion(&self, kind: &PatternPredicateKind<'db>) -> Type<'db> {
+        match kind {
+            PatternPredicateKind::Singleton(singleton) => match singleton {
+                ast::Singleton::None => Type::none(self.db()),
+                ast::Singleton::True => Type::bool_literal(true),
+                ast::Singleton::False => Type::bool_literal(false),
+            },
+            PatternPredicateKind::Value(value) => {
+                let ty = infer_same_file_expression_type(self.db(), *value, TypeContext::default());
+                if ty.is_single_valued(self.db()) {
+                    ty
+                } else {
+                    Type::Never
+                }
+            }
+            PatternPredicateKind::Class(class, kind) => {
+                if kind.is_irrefutable() {
+                    self.class_pattern_type_for_exclusion(*class)
+                        .unwrap_or(Type::Never)
+                } else {
+                    Type::Never
+                }
+            }
+            PatternPredicateKind::Mapping(kind, _) => {
+                if kind.is_irrefutable() {
+                    mapping_pattern_type(self.db())
+                } else {
+                    Type::Never
+                }
+            }
+            PatternPredicateKind::Sequence(kind, star_position, elements) => self
+                .sequence_pattern_tuple_type_for_exclusion(*star_position, elements)
+                .unwrap_or_else(|| {
+                    if kind.is_irrefutable() {
+                        sequence_pattern_type(self.db())
+                    } else {
+                        Type::Never
+                    }
+                }),
+            PatternPredicateKind::Or(predicates) => UnionType::from_elements(
+                self.db(),
+                predicates
+                    .iter()
+                    .map(|predicate| self.pattern_kind_to_type_for_exclusion(predicate)),
+            ),
+            PatternPredicateKind::As(Some(pattern), _) => {
+                self.pattern_kind_to_type_for_exclusion(pattern)
+            }
+            PatternPredicateKind::As(None, _) => Type::object(),
+            PatternPredicateKind::Unsupported => Type::Never,
+        }
+    }
+
+    fn class_pattern_type_for_exclusion(&self, class: Expression<'db>) -> Option<Type<'db>> {
+        match infer_same_file_expression_type(self.db(), class, TypeContext::default()) {
+            Type::ClassLiteral(class) => Some(Type::instance(
+                self.db(),
+                class.top_materialization(self.db()),
+            )),
+            Type::SpecialForm(SpecialFormType::Callable) => Some(
+                Type::Callable(CallableType::unknown(self.db())).top_materialization(self.db()),
+            ),
+            _ => None,
+        }
+    }
+
+    fn sequence_pattern_tuple_type_for_exclusion(
+        &self,
+        star_position: Option<usize>,
+        elements: &[PatternPredicateKind<'db>],
+    ) -> Option<Type<'db>> {
+        if star_position.is_some() {
+            return None;
+        }
+
+        Some(Type::heterogeneous_tuple(
+            self.db(),
+            elements
+                .iter()
+                .map(|element| self.pattern_kind_to_type_for_exclusion(element)),
+        ))
+    }
+
+    fn sequence_pattern_length(star_position: Option<usize>, pattern_len: usize) -> TupleLength {
+        star_position.map_or(TupleLength::Fixed(pattern_len), |star_position| {
+            TupleLength::Variable(star_position, pattern_len - star_position - 1)
+        })
+    }
+
+    fn sequence_pattern_length_definitely_matches(
+        pattern_length: TupleLength,
+        subject_length: TupleLength,
+    ) -> bool {
+        match pattern_length {
+            TupleLength::Fixed(pattern_len) => {
+                subject_length.minimum() == pattern_len
+                    && subject_length.maximum() == Some(pattern_len)
+            }
+            TupleLength::Variable(prefix, suffix) => subject_length.minimum() >= prefix + suffix,
         }
     }
 
@@ -2173,8 +2385,9 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             }
             ast::Pattern::MatchSingleton(_) => None,
             ast::Pattern::MatchSequence(match_sequence) => {
+                let matched_subject_ty = self.match_pattern_matched_subject_ty(pattern, subject_ty);
                 let element_tys =
-                    self.match_sequence_pattern_element_tys(match_sequence, subject_ty);
+                    self.match_sequence_pattern_element_tys(match_sequence, matched_subject_ty);
                 match_sequence
                     .patterns
                     .iter()
@@ -2374,14 +2587,67 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                     .iter()
                     .map(|pattern| self.match_pattern_matched_subject_ty(pattern, subject_ty)),
             ),
-            ast::Pattern::MatchSequence(_) => {
-                self.intersect_types(subject_ty, sequence_pattern_type(self.db()))
+            ast::Pattern::MatchSequence(match_sequence) => {
+                self.match_sequence_pattern_subject_ty(match_sequence, subject_ty)
             }
             ast::Pattern::MatchMapping(_) => {
                 self.intersect_types(subject_ty, mapping_pattern_type(self.db()))
             }
             ast::Pattern::MatchStar(_) => subject_ty,
         }
+    }
+
+    fn match_sequence_pattern_subject_ty(
+        &mut self,
+        pattern: &'ast ast::PatternMatchSequence,
+        subject_ty: Type<'db>,
+    ) -> Type<'db> {
+        let subject_ty = self.intersect_types(subject_ty, sequence_pattern_type(self.db()));
+        match subject_ty.resolve_type_alias(self.db()) {
+            Type::Union(union_ty) => union_ty.map(self.db(), |element| {
+                self.match_single_sequence_pattern_subject_ty(pattern, *element)
+                    .unwrap_or(*element)
+            }),
+            ty => self
+                .match_single_sequence_pattern_subject_ty(pattern, ty)
+                .unwrap_or(subject_ty),
+        }
+    }
+
+    fn match_single_sequence_pattern_subject_ty(
+        &mut self,
+        pattern: &'ast ast::PatternMatchSequence,
+        subject_ty: Type<'db>,
+    ) -> Option<Type<'db>> {
+        let tuple = subject_ty.as_nominal_instance()?.tuple_spec(self.db())?;
+        let star_position = pattern
+            .patterns
+            .iter()
+            .position(|pattern| matches!(pattern, ast::Pattern::MatchStar(_)));
+        let target_len = Self::sequence_pattern_length(star_position, pattern.patterns.len());
+        let Ok(resized) = tuple.resize(self.db(), target_len) else {
+            return Some(Type::Never);
+        };
+
+        if star_position.is_some() {
+            return Some(subject_ty);
+        }
+
+        let Tuple::Fixed(fixed) = resized else {
+            return Some(subject_ty);
+        };
+
+        let mut element_tys = Vec::with_capacity(pattern.patterns.len());
+        for (element_ty, element_pattern) in fixed.iter_all_elements().zip(&pattern.patterns) {
+            let pattern_ty = self.match_pattern_matched_subject_ty(element_pattern, Type::object());
+            let narrowed_ty = self.intersect_types(element_ty, pattern_ty);
+            if narrowed_ty.is_never() {
+                return Some(Type::Never);
+            }
+            element_tys.push(narrowed_ty);
+        }
+
+        Some(Type::heterogeneous_tuple(self.db(), element_tys))
     }
 
     fn match_sequence_pattern_element_tys(

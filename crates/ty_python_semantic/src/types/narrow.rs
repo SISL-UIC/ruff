@@ -1,11 +1,14 @@
 use crate::Db;
-use crate::reachability::{ReachabilityConstraintsExtension, sequence_pattern_type};
+use crate::reachability::{
+    ReachabilityConstraintsExtension, sequence_pattern_type, sequence_pattern_type_with_element,
+};
 use crate::subscript::PyIndex;
 use crate::types::enums::{enum_member_literals, enum_metadata};
 use crate::types::function::KnownFunction;
 use crate::types::infer::{ExpressionInference, infer_same_file_expression_type};
 use crate::types::constraints::{ConstraintSetBuilder, Solutions};
 use crate::types::special_form::TypeQualifier;
+use crate::types::tuple::{Tuple, TupleLength};
 use crate::types::typed_dict::{
     TypedDictField, TypedDictFieldBuilder, TypedDictSchema, TypedDictType,
 };
@@ -811,9 +814,14 @@ impl<'db, 'ast> NarrowingConstraintsBuilder<'db, 'ast> {
             PatternPredicateKind::Mapping(kind, entries) => {
                 self.evaluate_match_pattern_mapping(subject, *kind, entries, is_positive)
             }
-            PatternPredicateKind::Sequence(kind) => {
-                self.evaluate_match_pattern_sequence(subject, *kind, is_positive)
-            }
+            PatternPredicateKind::Sequence(kind, star_position, elements) => self
+                .evaluate_match_pattern_sequence(
+                    subject,
+                    *kind,
+                    *star_position,
+                    elements,
+                    is_positive,
+                ),
             PatternPredicateKind::Value(expr) => {
                 self.evaluate_match_pattern_value(subject, *expr, is_positive)
             }
@@ -1936,21 +1944,100 @@ impl<'db, 'ast> NarrowingConstraintsBuilder<'db, 'ast> {
         &mut self,
         subject: Expression<'db>,
         kind: ClassPatternKind,
+        star_position: Option<usize>,
+        elements: &[PatternPredicateKind<'db>],
         is_positive: bool,
     ) -> Option<NarrowingConstraints<'db>> {
-        if !kind.is_irrefutable() && !is_positive {
-            return None;
+        let subject_node = subject.node_ref(self.db).node(self.module);
+        let place = PlaceExpr::try_from_expr(subject_node)
+            .map(|subject_place_expr| self.expect_place(&subject_place_expr));
+
+        let mut constraints = NarrowingConstraints::default();
+
+        if let Some(place) = place
+            && (kind.is_irrefutable() || is_positive)
+        {
+            let sequence_type = self
+                .sequence_pattern_type(star_position, elements)
+                .negate_if(self.db, !is_positive);
+            constraints.insert(place, NarrowingConstraint::intersection(sequence_type));
         }
 
-        let subject = PlaceExpr::try_from_expr(subject.node_ref(self.db).node(self.module))?;
-        let place = self.expect_place(&subject);
+        if let Some(place) = place {
+            if let Some(constraint) = self.narrow_tuple_sequence_pattern(
+                infer_same_file_expression_type(self.db, subject, TypeContext::default()),
+                star_position,
+                elements,
+                is_positive,
+            ) {
+                constraints
+                    .entry(place)
+                    .and_modify(|existing| {
+                        *existing = existing.merge_constraint_and(constraint.clone());
+                    })
+                    .or_insert(constraint);
+            }
+        }
 
-        let sequence_type = sequence_pattern_type(self.db).negate_if(self.db, !is_positive);
+        if is_positive {
+            self.add_tuple_subject_element_constraints(
+                subject,
+                subject_node,
+                star_position,
+                elements,
+                &mut constraints,
+            );
+        }
 
-        Some(NarrowingConstraints::from_iter([(
-            place,
-            NarrowingConstraint::intersection(sequence_type),
-        )]))
+        if constraints.is_empty() {
+            None
+        } else {
+            Some(constraints)
+        }
+    }
+
+    fn add_tuple_subject_element_constraints(
+        &mut self,
+        subject: Expression<'db>,
+        subject_node: &ast::Expr,
+        star_position: Option<usize>,
+        elements: &[PatternPredicateKind<'db>],
+        constraints: &mut NarrowingConstraints<'db>,
+    ) {
+        if star_position.is_some() {
+            return;
+        }
+
+        let ast::Expr::Tuple(tuple) = subject_node else {
+            return;
+        };
+
+        if tuple.elts.len() != elements.len() {
+            return;
+        }
+
+        let inference = infer_expression_types(self.db, subject, TypeContext::default());
+        for (element, pattern) in tuple.elts.iter().zip(elements) {
+            let Some(pattern_ty) = self.pattern_match_type(pattern, false) else {
+                continue;
+            };
+            let Some(place_expr) = PlaceExpr::try_from_expr(element) else {
+                continue;
+            };
+            let place = self.expect_place(&place_expr);
+            let narrowed_ty = IntersectionType::from_two_elements(
+                self.db,
+                inference.expression_type(element),
+                pattern_ty,
+            );
+            let constraint = NarrowingConstraint::intersection(narrowed_ty);
+            constraints
+                .entry(place)
+                .and_modify(|existing| {
+                    *existing = existing.merge_constraint_and(constraint.clone());
+                })
+                .or_insert(constraint);
+        }
     }
 
     fn evaluate_match_pattern_value(
@@ -2261,6 +2348,192 @@ impl<'db, 'ast> NarrowingConstraintsBuilder<'db, 'ast> {
         }
     }
 
+    fn pattern_match_type(
+        &self,
+        pattern: &PatternPredicateKind<'db>,
+        require_irrefutable: bool,
+    ) -> Option<Type<'db>> {
+        match pattern {
+            PatternPredicateKind::Singleton(singleton) => Some(singleton_type(self.db, *singleton)),
+            PatternPredicateKind::Value(value) => Some(infer_same_file_expression_type(
+                self.db,
+                *value,
+                TypeContext::default(),
+            )),
+            PatternPredicateKind::Class(class, kind) => {
+                if require_irrefutable && !kind.is_irrefutable() {
+                    None
+                } else {
+                    self.class_pattern_type(*class)
+                }
+            }
+            PatternPredicateKind::Or(patterns) => UnionType::try_from_elements(
+                self.db,
+                patterns
+                    .iter()
+                    .map(|pattern| self.pattern_match_type(pattern, require_irrefutable)),
+            ),
+            PatternPredicateKind::As(Some(pattern), _) => {
+                self.pattern_match_type(pattern, require_irrefutable)
+            }
+            PatternPredicateKind::As(None, _) => Some(Type::object()),
+            _ => None,
+        }
+    }
+
+    fn class_pattern_type(&self, class: Expression<'db>) -> Option<Type<'db>> {
+        match infer_same_file_expression_type(self.db, class, TypeContext::default()) {
+            Type::ClassLiteral(class) => {
+                Some(Type::instance(self.db, class.top_materialization(self.db)))
+            }
+            Type::SpecialForm(SpecialFormType::Callable) => {
+                Some(Type::Callable(CallableType::unknown(self.db)).top_materialization(self.db))
+            }
+            _ => None,
+        }
+    }
+
+    fn sequence_pattern_type(
+        &self,
+        star_position: Option<usize>,
+        elements: &[PatternPredicateKind<'db>],
+    ) -> Type<'db> {
+        let Some(element_ty) = self.sequence_pattern_element_type(star_position, elements) else {
+            return sequence_pattern_type(self.db);
+        };
+
+        sequence_pattern_type_with_element(self.db, element_ty)
+    }
+
+    fn sequence_pattern_element_type(
+        &self,
+        star_position: Option<usize>,
+        elements: &[PatternPredicateKind<'db>],
+    ) -> Option<Type<'db>> {
+        if star_position.is_some() || elements.is_empty() {
+            return None;
+        }
+
+        UnionType::try_from_elements(
+            self.db,
+            elements.iter().map(|element| {
+                self.pattern_match_type(element, false)
+                    .map(|ty| ty.top_materialization(self.db))
+            }),
+        )
+    }
+
+    fn narrow_tuple_sequence_pattern(
+        &self,
+        subject_ty: Type<'db>,
+        star_position: Option<usize>,
+        elements: &[PatternPredicateKind<'db>],
+        is_positive: bool,
+    ) -> Option<NarrowingConstraint<'db>> {
+        let subject_ty = subject_ty.resolve_type_alias(self.db);
+        let narrowed = match subject_ty {
+            Type::Union(union) => union.map(self.db, |element| {
+                self.narrow_single_tuple_sequence_pattern(
+                    *element,
+                    star_position,
+                    elements,
+                    is_positive,
+                )
+                .unwrap_or(*element)
+            }),
+            ty => {
+                self.narrow_single_tuple_sequence_pattern(ty, star_position, elements, is_positive)?
+            }
+        };
+
+        (narrowed != subject_ty).then(|| {
+            if is_positive {
+                NarrowingConstraint::intersection(narrowed)
+            } else {
+                NarrowingConstraint::replacement(narrowed)
+            }
+        })
+    }
+
+    fn narrow_single_tuple_sequence_pattern(
+        &self,
+        ty: Type<'db>,
+        star_position: Option<usize>,
+        elements: &[PatternPredicateKind<'db>],
+        is_positive: bool,
+    ) -> Option<Type<'db>> {
+        let tuple = ty.as_nominal_instance()?.tuple_spec(self.db)?;
+        let pattern_length = sequence_pattern_length(star_position, elements.len());
+        let original_length = tuple.len();
+        let resized = match tuple.resize(self.db, pattern_length) {
+            Ok(resized) => resized,
+            Err(_) => {
+                return Some(if is_positive { Type::Never } else { ty });
+            }
+        };
+
+        if star_position.is_some() {
+            return Some(ty);
+        }
+
+        let Tuple::Fixed(fixed) = resized else {
+            return Some(ty);
+        };
+        let element_tys = fixed.iter_all_elements().collect::<Vec<_>>();
+
+        if is_positive {
+            let narrowed = element_tys
+                .iter()
+                .zip(elements)
+                .map(|(&element_ty, pattern)| {
+                    self.pattern_match_type(pattern, false)
+                        .map_or(element_ty, |pattern_ty| {
+                            IntersectionType::from_two_elements(self.db, element_ty, pattern_ty)
+                        })
+                })
+                .collect::<Vec<_>>();
+            return Some(Type::heterogeneous_tuple(self.db, narrowed));
+        }
+
+        if !sequence_pattern_length_definitely_matches(pattern_length, original_length) {
+            return Some(ty);
+        }
+
+        let mut alternatives = vec![];
+        let mut positive_prefix = element_tys.clone();
+
+        for (index, (&element_ty, pattern)) in element_tys.iter().zip(elements).enumerate() {
+            let Some(pattern_ty) = self.pattern_match_type(pattern, true) else {
+                return Some(ty);
+            };
+
+            if element_ty.is_subtype_of(self.db, pattern_ty) {
+                positive_prefix[index] = element_ty;
+                continue;
+            }
+
+            if element_ty.is_disjoint_from(self.db, pattern_ty) {
+                return Some(ty);
+            }
+
+            let mut alternative = positive_prefix.clone();
+            alternative[index] = IntersectionBuilder::new(self.db)
+                .add_positive(element_ty)
+                .add_negative(pattern_ty)
+                .build();
+            alternatives.push(Type::heterogeneous_tuple(self.db, alternative));
+
+            positive_prefix[index] =
+                IntersectionType::from_two_elements(self.db, element_ty, pattern_ty);
+        }
+
+        if alternatives.is_empty() {
+            Some(Type::Never)
+        } else {
+            Some(UnionType::from_elements(self.db, alternatives))
+        }
+    }
+
     /// Narrow tagged unions based on literal-valued attributes.
     ///
     /// Given an attribute expression like `union.tag`, where each union member has a literal
@@ -2375,6 +2648,24 @@ fn singleton_type(db: &dyn Db, singleton: ast::Singleton) -> Type<'_> {
         ast::Singleton::None => Type::none(db),
         ast::Singleton::True => Type::bool_literal(true),
         ast::Singleton::False => Type::bool_literal(false),
+    }
+}
+
+fn sequence_pattern_length(star_position: Option<usize>, pattern_len: usize) -> TupleLength {
+    star_position.map_or(TupleLength::Fixed(pattern_len), |star_position| {
+        TupleLength::Variable(star_position, pattern_len - star_position - 1)
+    })
+}
+
+fn sequence_pattern_length_definitely_matches(
+    pattern_length: TupleLength,
+    subject_length: TupleLength,
+) -> bool {
+    match pattern_length {
+        TupleLength::Fixed(pattern_len) => {
+            subject_length.minimum() == pattern_len && subject_length.maximum() == Some(pattern_len)
+        }
+        TupleLength::Variable(prefix, suffix) => subject_length.minimum() >= prefix + suffix,
     }
 }
 
