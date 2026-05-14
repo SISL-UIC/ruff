@@ -419,6 +419,31 @@ def _(x: A | B):
             reveal_type(x)  # revealed: B
 ```
 
+## Value patterns with `Final` constants
+
+```py
+from typing import Final
+
+class Numbers:
+    ZERO: Final = 0.0
+    ONE: Final = 1
+    TWO: Final = 2
+    INFINITY: Final = float("inf")
+
+def _(x: int | float):
+    match x:
+        case Numbers.ONE:
+            reveal_type(x)  # revealed: Literal[1]
+        case Numbers.INFINITY:
+            reveal_type(x)  # revealed: (int & ~Literal[1]) | float
+        case Numbers.ZERO:
+            reveal_type(x)  # revealed: (int & ~Literal[1]) | float
+        case Numbers.TWO:
+            reveal_type(x)  # revealed: Literal[2]
+        case _:
+            reveal_type(x)  # revealed: (int & ~Literal[1] & ~Literal[2]) | float
+```
+
 ## Value patterns with guard
 
 ```py

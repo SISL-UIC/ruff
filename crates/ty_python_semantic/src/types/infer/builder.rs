@@ -2404,7 +2404,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             }
             ast::Pattern::MatchMapping(match_mapping) => {
                 for key in &match_mapping.keys {
-                    self.get_or_infer_expression(key, TypeContext::default());
+                    self.get_or_infer_maybe_standalone_expression(key, TypeContext::default());
                 }
 
                 let (key_ty, value_ty) = subject_ty

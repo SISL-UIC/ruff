@@ -3,10 +3,10 @@ use crate::reachability::{
     ReachabilityConstraintsExtension, sequence_pattern_type, sequence_pattern_type_with_element,
 };
 use crate::subscript::PyIndex;
+use crate::types::constraints::{ConstraintSetBuilder, Solutions};
 use crate::types::enums::{enum_member_literals, enum_metadata};
 use crate::types::function::KnownFunction;
 use crate::types::infer::{ExpressionInference, infer_same_file_expression_type};
-use crate::types::constraints::{ConstraintSetBuilder, Solutions};
 use crate::types::special_form::TypeQualifier;
 use crate::types::tuple::{Tuple, TupleLength};
 use crate::types::typed_dict::{
@@ -2053,6 +2053,7 @@ impl<'db, 'ast> NarrowingConstraintsBuilder<'db, 'ast> {
         };
         let subject_ty = infer_same_file_expression_type(self.db, subject, TypeContext::default());
         let value_ty = infer_same_file_expression_type(self.db, value, TypeContext::default());
+        let value_node = value.node_ref(self.db).node(self.module);
 
         let mut constraints = self
             .evaluate_expr_compare_op(subject_ty, value_ty, ast::CmpOp::Eq, is_positive)
@@ -2060,6 +2061,20 @@ impl<'db, 'ast> NarrowingConstraintsBuilder<'db, 'ast> {
                 NarrowingConstraints::from_iter([(place, NarrowingConstraint::intersection(ty))])
             })
             .unwrap_or_default();
+
+        if is_positive
+            && value_ty.is_single_valued(self.db)
+            && is_literal_constant_value(value_ty)
+            && !is_literal_value_pattern_expression(value_node)
+        {
+            let constraint = NarrowingConstraint::intersection(value_ty);
+            constraints
+                .entry(place)
+                .and_modify(|existing| {
+                    *existing = existing.merge_constraint_and(constraint.clone());
+                })
+                .or_insert(constraint);
+        }
 
         // Narrow tagged unions of `TypedDict`s with `Literal` keys, for example:
         //
@@ -2465,11 +2480,8 @@ impl<'db, 'ast> NarrowingConstraintsBuilder<'db, 'ast> {
         let tuple = ty.as_nominal_instance()?.tuple_spec(self.db)?;
         let pattern_length = sequence_pattern_length(star_position, elements.len());
         let original_length = tuple.len();
-        let resized = match tuple.resize(self.db, pattern_length) {
-            Ok(resized) => resized,
-            Err(_) => {
-                return Some(if is_positive { Type::Never } else { ty });
-            }
+        let Ok(resized) = tuple.resize(self.db, pattern_length) else {
+            return Some(if is_positive { Type::Never } else { ty });
         };
 
         if star_position.is_some() {
@@ -2649,6 +2661,31 @@ fn singleton_type(db: &dyn Db, singleton: ast::Singleton) -> Type<'_> {
         ast::Singleton::True => Type::bool_literal(true),
         ast::Singleton::False => Type::bool_literal(false),
     }
+}
+
+fn is_literal_value_pattern_expression(expr: &ast::Expr) -> bool {
+    match expr {
+        ast::Expr::NoneLiteral(_)
+        | ast::Expr::NumberLiteral(_)
+        | ast::Expr::BooleanLiteral(_)
+        | ast::Expr::StringLiteral(_)
+        | ast::Expr::BytesLiteral(_)
+        | ast::Expr::EllipsisLiteral(_) => true,
+        ast::Expr::UnaryOp(unary) => is_literal_value_pattern_expression(&unary.operand),
+        _ => false,
+    }
+}
+
+fn is_literal_constant_value(ty: Type) -> bool {
+    matches!(
+        ty.as_literal_value_kind(),
+        Some(
+            LiteralValueTypeKind::Int(_)
+                | LiteralValueTypeKind::Bool(_)
+                | LiteralValueTypeKind::String(_)
+                | LiteralValueTypeKind::Bytes(_)
+        )
+    )
 }
 
 fn sequence_pattern_length(star_position: Option<usize>, pattern_len: usize) -> TupleLength {
