@@ -125,6 +125,48 @@ def f(x: Covariant[int]):
             assert_never(x)
 ```
 
+## Class patterns with generic subclasses
+
+```toml
+[environment]
+python-version = "3.12"
+```
+
+```py
+from dataclasses import dataclass
+
+@dataclass
+class Leaf[K, V]:
+    key: K
+    value: V
+
+@dataclass
+class Node[K, V](Leaf[K, V]):
+    left: Leaf[K, V]
+    right: Leaf[K, V]
+
+def f[K, V](x: Leaf[K, V]):
+    match x:
+        case Node(key=key, value=value, left=left, right=right):
+            reveal_type(key)  # revealed: K@f
+            reveal_type(value)  # revealed: V@f
+            reveal_type(left)  # revealed: Leaf[K@f, V@f]
+            reveal_type(right)  # revealed: Leaf[K@f, V@f]
+```
+
+## Class patterns with `typing.Callable`
+
+```py
+import typing as t
+
+def _(x: int | type[int] | t.Callable[..., str]):
+    match x:
+        case t.Callable():
+            reveal_type(x)  # revealed: (int & Top[(...) -> object]) | type[int] | ((...) -> str)
+        case _:
+            reveal_type(x)  # revealed: int & ~Top[(...) -> object]
+```
+
 ## Mapping patterns
 
 ```py
