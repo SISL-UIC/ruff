@@ -4526,14 +4526,14 @@ class Bar(TypedDict):
 def disappointment(u: Foo | Bar, v: Literal["foo"]):
     if "foo" in u:
         # We don't narrow to just `Foo` here...
-        reveal_type(u)  # revealed: Foo | (Bar & <TypedDict with items 'foo'>)
+        reveal_type(u)  # revealed: Foo | (Bar & <Protocol with members '__getitem__'>)
         reveal_type(u["foo"])  # revealed: object
     else:
         # ...(even though we *can* narrow it here)...
         reveal_type(u)  # revealed: Bar
 
     if v in u:
-        reveal_type(u)  # revealed: Foo | (Bar & <TypedDict with items 'foo'>)
+        reveal_type(u)  # revealed: Foo | (Bar & <Protocol with members '__getitem__'>)
         reveal_type(u["foo"])  # revealed: object
     else:
         reveal_type(u)  # revealed: Bar
@@ -4586,7 +4586,7 @@ def _(t: Bar, u: Foo | Intersection[Bar, Any], v: Intersection[Bar, Any], w: Lit
     if "bar" not in u:
         reveal_type(u)  # revealed: Foo
     else:
-        reveal_type(u)  # revealed: (Foo & <TypedDict with items 'bar'>) | (Bar & Any)
+        reveal_type(u)  # revealed: (Foo & <Protocol with members '__getitem__'>) | (Bar & Any)
 
     if "bar" not in v:
         reveal_type(v)  # revealed: Never
@@ -4596,12 +4596,12 @@ def _(t: Bar, u: Foo | Intersection[Bar, Any], v: Intersection[Bar, Any], w: Lit
     if w not in u:
         reveal_type(u)  # revealed: Foo
     else:
-        reveal_type(u)  # revealed: (Foo & <TypedDict with items 'bar'>) | (Bar & Any)
+        reveal_type(u)  # revealed: (Foo & <Protocol with members '__getitem__'>) | (Bar & Any)
 
     if "bar" not in (u2 := u):
         reveal_type(u2)  # revealed: Foo
     else:
-        reveal_type(u2)  # revealed: (Foo & <TypedDict with items 'bar'>) | (Bar & Any)
+        reveal_type(u2)  # revealed: (Foo & <Protocol with members '__getitem__'>) | (Bar & Any)
 ```
 
 With `closed=True`, the narrowing that we couldn't do above becomes possible, because a [closed]
@@ -4619,13 +4619,13 @@ class ClosedBar(TypedDict, closed=True):
 def _(u: ClosedFoo | ClosedBar, v: Literal["foo"]):
     if "foo" in u:
         # TODO: should be `ClosedFoo`
-        reveal_type(u)  # revealed: ClosedFoo | (ClosedBar & <TypedDict with items 'foo'>)
+        reveal_type(u)  # revealed: ClosedFoo | (ClosedBar & <Protocol with members '__getitem__'>)
     else:
         reveal_type(u)  # revealed: ClosedBar
 
     if v in u:
         # TODO: should be `ClosedFoo`
-        reveal_type(u)  # revealed: ClosedFoo | (ClosedBar & <TypedDict with items 'foo'>)
+        reveal_type(u)  # revealed: ClosedFoo | (ClosedBar & <Protocol with members '__getitem__'>)
     else:
         reveal_type(u)  # revealed: ClosedBar
 ```
@@ -4646,7 +4646,7 @@ def _(
         reveal_type(u)  # revealed: ClosedFoo
     else:
         # TODO: should be `ClosedBar & Any`
-        reveal_type(u)  # revealed: (ClosedFoo & <TypedDict with items 'bar'>) | (ClosedBar & Any)
+        reveal_type(u)  # revealed: (ClosedFoo & <Protocol with members '__getitem__'>) | (ClosedBar & Any)
 
     if "bar" not in v:
         reveal_type(v)  # revealed: Never
@@ -4657,7 +4657,7 @@ def _(
         reveal_type(u)  # revealed: ClosedFoo
     else:
         # TODO: should be `ClosedBar & Any`
-        reveal_type(u)  # revealed: (ClosedFoo & <TypedDict with items 'bar'>) | (ClosedBar & Any)
+        reveal_type(u)  # revealed: (ClosedFoo & <Protocol with members '__getitem__'>) | (ClosedBar & Any)
 ```
 
 ## Narrowing tagged unions of `TypedDict`s with `match` statements
@@ -4813,7 +4813,7 @@ def test_in(x: ThingWithBaz):
     if "baz" not in x:
         reveal_type(x)  # revealed: Foo
     else:
-        reveal_type(x)  # revealed: (Foo & <TypedDict with items 'baz'>) | Baz
+        reveal_type(x)  # revealed: (Foo & <Protocol with members '__getitem__'>) | Baz
 ```
 
 Nested PEP 695 type aliases (an alias referring to another alias) also work:
@@ -4842,7 +4842,7 @@ def test_nested_in(x: OuterWithBaz):
     if "baz" not in x:
         reveal_type(x)  # revealed: Foo
     else:
-        reveal_type(x)  # revealed: (Foo & <TypedDict with items 'baz'>) | Baz
+        reveal_type(x)  # revealed: (Foo & <Protocol with members '__getitem__'>) | Baz
 ```
 
 ## Only annotated declarations are allowed in the class body
