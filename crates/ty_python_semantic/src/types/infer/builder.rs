@@ -436,7 +436,8 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
     }
 
     fn extend_cross_scope_definition(&mut self, inference: &DefinitionInference<'db>) {
-        self.expressions.extend(inference.expressions.iter());
+        self.expressions
+            .extend(inference.expressions.iter().copied());
 
         if let Some(extra) = &inference.extra {
             self.context.extend(&extra.diagnostics);
@@ -451,7 +452,8 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
     }
 
     fn extend_cross_scope_expression(&mut self, inference: &ExpressionInference<'db>) {
-        self.expressions.extend(inference.expressions.iter());
+        self.expressions
+            .extend(inference.expressions.iter().copied());
 
         if let Some(extra) = &inference.extra {
             // Diagnostics that depend on these expression types are emitted by the owning
@@ -8593,7 +8595,13 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                     return Place::Undefined.into();
                 }
                 EnclosingSnapshotResult::FoundBindings(bindings) => {
-                    let mut place_and_qualifiers = place_from_bindings(db, bindings);
+                    let global_place_table = self.index.place_table(FileScopeId::global());
+                    let mut place_and_qualifiers =
+                        if let Some(place_id) = global_place_table.place_id(place_expr) {
+                            place_from_bindings_for_place(db, bindings, place_id)
+                        } else {
+                            place_from_bindings(db, bindings)
+                        };
                     if assume_bound && let Place::Defined(defined) = place_and_qualifiers.place {
                         place_and_qualifiers.place =
                             Place::Defined(defined.with_definedness(Definedness::AlwaysDefined));
@@ -8761,7 +8769,16 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                             }
                         }
                         EnclosingSnapshotResult::FoundBindings(bindings) => {
-                            let place = place_from_bindings(db, bindings).place.map_type(|ty| {
+                            let enclosing_place_table =
+                                self.index.place_table(enclosing_scope_file_id);
+                            let place = if let Some(place_id) =
+                                enclosing_place_table.place_id(place_expr)
+                            {
+                                place_from_bindings_for_place(db, bindings, place_id).place
+                            } else {
+                                place_from_bindings(db, bindings).place
+                            }
+                            .map_type(|ty| {
                                 self.narrow_place_with_applicable_constraints(
                                     place_expr,
                                     ty,
@@ -10263,7 +10280,8 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             "speculative `TypeInferenceBuilder` should only be used for expression inference"
         );
 
-        self.expressions.extend(expressions.iter());
+        self.expressions
+            .extend(expressions.iter().map(|(key, ty)| (*key, *ty)));
         self.context.extend(&diagnostics);
         self.extend_cycle_recovery(cycle_recovery);
         self.string_annotations

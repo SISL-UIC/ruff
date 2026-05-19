@@ -1138,6 +1138,22 @@ impl<'db> UseDefMapBuilder<'db> {
             .insert(binding, place_state.declarations().clone());
     }
 
+    pub(super) fn place_has_live_binding(
+        &self,
+        place: ScopedPlaceId,
+        binding: Definition<'db>,
+    ) -> bool {
+        let live_bindings = match place {
+            ScopedPlaceId::Symbol(symbol) => self.symbol_states[symbol].bindings(),
+            ScopedPlaceId::Member(member) => self.member_states[member].bindings(),
+        };
+
+        live_bindings.iter().any(|live_binding| {
+            self.all_definitions[live_binding.binding()]
+                .is_defined_and(|definition| definition == binding)
+        })
+    }
+
     pub(super) fn add_predicate(
         &mut self,
         predicate: PredicateOrLiteral<'db>,
@@ -1219,9 +1235,10 @@ impl<'db> UseDefMapBuilder<'db> {
     /// Snapshot the state of a single symbol and all of its associated members, at the current
     /// point in control flow.
     ///
-    /// This is only used for `*`-import reachability constraints, which are handled differently
-    /// to most other reachability constraints. See the doc-comment for
-    /// [`Self::record_and_negate_star_import_reachability_constraint`] for more details.
+    /// This supports code paths that can apply and then negate a reachability constraint for one
+    /// known symbol instead of snapshotting the entire use-def map. See
+    /// [`Self::record_and_negate_star_import_reachability_constraint`] for the original
+    /// performance-sensitive use case.
     pub(super) fn single_symbol_snapshot(
         &self,
         symbol: ScopedSymbolId,
@@ -1280,6 +1297,8 @@ impl<'db> UseDefMapBuilder<'db> {
         );
     }
 
+    /// Merge the post-definition state for one symbol with its previous state under the negated
+    /// reachability constraint.
     pub(super) fn record_and_negate_single_symbol_reachability_constraint(
         &mut self,
         reachability_id: ScopedReachabilityConstraintId,

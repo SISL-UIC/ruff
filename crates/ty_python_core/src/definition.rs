@@ -1499,10 +1499,6 @@ impl<'db> LoopHeaderDefinitionKind<'db> {
 pub struct DefinitionNodeKey(NodeKey);
 
 impl DefinitionNodeKey {
-    pub(crate) fn from_node_ref(node: ast::AnyNodeRef<'_>) -> Self {
-        Self(NodeKey::from_node(node))
-    }
-
     pub fn from_assignment(node: &ast::StmtAssign) -> impl Iterator<Item = DefinitionNodeKey> {
         node.targets
             .iter()
