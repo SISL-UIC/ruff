@@ -59,7 +59,6 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
                     | WalrusTargetScope::InvalidClassBodyComprehension
             ) && !invalid_in_comprehension_iterable
                 && self.is_active_comprehension_target(&target.id);
-            let invalid_rebound_comprehension_variable = active_target_rebound;
 
             if invalid_in_comprehension_iterable {
                 self.report_semantic_error(SemanticSyntaxError {
@@ -73,7 +72,7 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
                     range: target.range,
                     python_version: self.python_version,
                 });
-            } else if !invalid_rebound_comprehension_variable
+            } else if !active_target_rebound
                 && walrus_target_scope == WalrusTargetScope::InvalidClassBodyComprehension
             {
                 self.report_semantic_error(SemanticSyntaxError {
@@ -88,7 +87,7 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
                 return;
             }
 
-            if invalid_rebound_comprehension_variable {
+            if active_target_rebound {
                 return;
             }
 
@@ -322,25 +321,23 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
         source_scope: FileScopeId,
         deferred: DeferredWalrusDefinition<'db>,
     ) {
-        if self.current_scope() == deferred.target_scope {
-            let Some(scope_index) = self.scope_stack_index(deferred.target_scope) else {
-                debug_assert!(false, "deferred walrus target scope should still be active");
-                self.discard_deferred_walrus_definition(deferred);
-                return;
-            };
+        let Some(scope_index) = self.scope_stack_index(deferred.target_scope) else {
+            debug_assert!(false, "deferred walrus target scope should still be active");
+            self.discard_deferred_walrus_definition(deferred);
+            return;
+        };
 
-            let target_scope_state = self.use_def_maps[deferred.target_scope].snapshot();
-            let propagated_reachability =
-                self.propagate_deferred_walrus_reachability(source_scope, deferred.reachability);
-            self.record_deferred_walrus_definition_in_scope(
-                deferred.target_scope,
-                scope_index,
-                deferred.target_place,
-                deferred.definition,
-                propagated_reachability,
-            );
-            self.use_def_maps[deferred.target_scope].restore(target_scope_state);
-        }
+        let target_scope_state = self.use_def_maps[deferred.target_scope].snapshot();
+        let propagated_reachability =
+            self.propagate_deferred_walrus_reachability(source_scope, deferred.reachability);
+        self.record_deferred_walrus_definition_in_scope(
+            deferred.target_scope,
+            scope_index,
+            deferred.target_place,
+            deferred.definition,
+            propagated_reachability,
+        );
+        self.use_def_maps[deferred.target_scope].restore(target_scope_state);
 
         self.discard_deferred_walrus_definition(deferred);
     }

@@ -1910,6 +1910,7 @@ struct ReboundComprehensionVisitor<'a> {
 impl Visitor<'_> for ReboundComprehensionVisitor<'_> {
     fn visit_expr(&mut self, expr: &Expr) {
         if let Expr::Lambda(ast::ExprLambda { parameters, .. }) = expr {
+            // Defaults run in the enclosing scope; the lambda body owns its local bindings.
             if let Some(parameters) = parameters {
                 self.visit_parameters(parameters);
             }
