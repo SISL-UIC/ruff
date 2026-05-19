@@ -3961,6 +3961,8 @@ impl<'ast> Visitor<'ast> for SemanticIndexBuilder<'_, 'ast> {
                     self.visit_parameters(parameters);
                 }
                 self.push_scope(NodeWithScopeRef::Lambda(lambda));
+                let active_comprehension_targets =
+                    std::mem::take(&mut self.active_comprehension_targets);
 
                 // Add symbols and definitions for the parameters to the lambda scope.
                 if let Some(parameters) = lambda.parameters.as_ref() {
@@ -3969,6 +3971,7 @@ impl<'ast> Visitor<'ast> for SemanticIndexBuilder<'_, 'ast> {
 
                 self.visit_expr(lambda.body.as_ref());
                 self.pop_scope();
+                self.active_comprehension_targets = active_comprehension_targets;
             }
             ast::Expr::If(ast::ExprIf {
                 body, test, orelse, ..

@@ -218,6 +218,10 @@ reveal_type(x)  # revealed: Unknown
 [x for x in range(3) if (lambda: (x := 1))()]
 # error: [unresolved-reference]
 reveal_type(x)  # revealed: Unknown
+
+[outer for outer in range(3) if (lambda: [(outer := 1) for _ in [0]])()]
+# error: [unresolved-reference]
+reveal_type(outer)  # revealed: Unknown
 ```
 
 ## Walrus in invalid comprehension contexts
