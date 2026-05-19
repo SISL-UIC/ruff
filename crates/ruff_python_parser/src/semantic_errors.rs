@@ -1909,6 +1909,13 @@ struct ReboundComprehensionVisitor<'a> {
 
 impl Visitor<'_> for ReboundComprehensionVisitor<'_> {
     fn visit_expr(&mut self, expr: &Expr) {
+        if let Expr::Lambda(ast::ExprLambda { parameters, .. }) = expr {
+            if let Some(parameters) = parameters {
+                self.visit_parameters(parameters);
+            }
+            return;
+        }
+
         if let Expr::Named(ast::ExprNamed { target, .. }) = expr {
             if let Expr::Name(ast::ExprName { id, range, .. }) = &**target {
                 if self.comprehensions.iter().any(|comp| {

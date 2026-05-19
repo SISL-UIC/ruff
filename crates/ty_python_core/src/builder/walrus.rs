@@ -59,8 +59,7 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
                     | WalrusTargetScope::InvalidClassBodyComprehension
             ) && !invalid_in_comprehension_iterable
                 && self.is_active_comprehension_target(&target.id);
-            let invalid_rebound_comprehension_variable =
-                already_reported_rebound || active_target_rebound;
+            let invalid_rebound_comprehension_variable = active_target_rebound;
 
             if invalid_in_comprehension_iterable {
                 self.report_semantic_error(SemanticSyntaxError {

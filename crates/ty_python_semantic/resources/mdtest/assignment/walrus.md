@@ -369,6 +369,14 @@ def _():
     reveal_type(funcs[0]())  # revealed: int | str
 ```
 
+### Lambda-local walrus target shadows comprehension iterator
+
+```py
+def _():
+    funcs = [(lambda: (x := "s", x)[1]) for x in range(3)]
+    reveal_type(funcs[0]())  # revealed: str
+```
+
 ### Named expression target invalidates aliases
 
 A named expression target that binds in an enclosing scope invalidates aliases in that target scope.
