@@ -409,6 +409,19 @@ except:
     reveal_type(y)  # revealed: int
 ```
 
+### Shadowed comprehension walruses remain visible to `except`
+
+```py
+def may_raise() -> None:
+    return None
+
+try:
+    [(y := 1, may_raise(), y := "s") for _ in [0]]
+except:
+    # error: [possibly-unresolved-reference]
+    reveal_type(y)  # revealed: Literal[1, "s"]
+```
+
 ### Honoring `global` declaration
 
 PEP 572: the walrus honors a `global` declaration in the enclosing scope.

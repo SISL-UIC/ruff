@@ -178,14 +178,17 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
                 continue;
             }
 
-            if !self.use_def_maps[popped_scope]
-                .place_has_live_binding(deferred.visible_place, deferred.definition)
-            {
-                self.discard_deferred_walrus_definition(deferred);
+            let current_scope = self.current_scope();
+            let is_live_binding = self.use_def_maps[popped_scope]
+                .place_has_live_binding(deferred.visible_place, deferred.definition);
+            if !is_live_binding && current_scope == deferred.target_scope {
+                self.record_shadowed_deferred_walrus_definition_for_try_snapshots(
+                    popped_scope,
+                    deferred,
+                );
                 continue;
             }
 
-            let current_scope = self.current_scope();
             let propagated_reachability =
                 self.propagate_deferred_walrus_reachability(popped_scope, deferred.reachability);
             if current_scope == deferred.target_scope {
@@ -313,6 +316,34 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
         self.place_tables[deferred.target_scope].mark_bound(deferred.target_place);
         self.use_def_maps[deferred.target_scope]
             .record_binding_context(deferred.target_place, deferred.definition);
+    }
+
+    fn record_shadowed_deferred_walrus_definition_for_try_snapshots(
+        &mut self,
+        source_scope: FileScopeId,
+        deferred: DeferredWalrusDefinition<'db>,
+    ) {
+        if self.current_scope() == deferred.target_scope {
+            let Some(scope_index) = self.scope_stack_index(deferred.target_scope) else {
+                debug_assert!(false, "deferred walrus target scope should still be active");
+                self.discard_deferred_walrus_definition(deferred);
+                return;
+            };
+
+            let target_scope_state = self.use_def_maps[deferred.target_scope].snapshot();
+            let propagated_reachability =
+                self.propagate_deferred_walrus_reachability(source_scope, deferred.reachability);
+            self.record_deferred_walrus_definition_in_scope(
+                deferred.target_scope,
+                scope_index,
+                deferred.target_place,
+                deferred.definition,
+                propagated_reachability,
+            );
+            self.use_def_maps[deferred.target_scope].restore(target_scope_state);
+        }
+
+        self.discard_deferred_walrus_definition(deferred);
     }
 
     fn record_deferred_walrus_definition_in_scope(
