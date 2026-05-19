@@ -276,6 +276,8 @@ Named expression targets in eager comprehensions preserve the reachability of th
 body.
 
 ```py
+from typing import Literal
+
 [(x := 1) for _ in [0] if False]
 # error: [unresolved-reference]
 reveal_type(x)  # revealed: Unknown
@@ -283,6 +285,11 @@ reveal_type(x)  # revealed: Unknown
 y = "old"
 [(y := 1) for _ in [0] if False]
 reveal_type(y)  # revealed: Literal["old"]
+
+flag: Literal[False] = False
+[(z := 1) for _ in [0] if flag]
+# error: [unresolved-reference]
+reveal_type(z)  # revealed: Unknown
 ```
 
 ### Nested comprehension
@@ -303,6 +310,11 @@ iterable. Invalid named expressions in iterable expressions do not bind the targ
 
 # error: [unresolved-reference]
 reveal_type(z)  # revealed: Unknown
+
+[x for x in [y for y in [1] if (nested := y)]]  # error: [invalid-syntax]
+
+# error: [unresolved-reference]
+reveal_type(nested)  # revealed: Unknown
 ```
 
 ### Read before named expression target is bound

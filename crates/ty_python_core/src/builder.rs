@@ -1689,6 +1689,7 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
                             .pattern(pattern, module)
                     }
                     PredicateNode::IsNonTerminalCall(_)
+                    | PredicateNode::DeferredWalrusReachability(_)
                     | PredicateNode::StarImportPlaceholder(_) => {
                         // These predicates don't narrow any places
                         PossiblyNarrowedPlaces::default()

@@ -7,6 +7,7 @@ use ruff_text_size::TextRange;
 
 use crate::definition::{Definition, DefinitionCategory};
 use crate::place::ScopedPlaceId;
+use crate::predicate::DeferredWalrusReachabilityPredicate;
 use crate::reachability_constraints::ScopedReachabilityConstraintId;
 use crate::scope::{FileScopeId, ScopeKind};
 use crate::symbol::Symbol;
@@ -27,43 +28,8 @@ pub(super) struct DeferredWalrusDefinition<'db> {
     definition: Definition<'db>,
     /// The comprehension scope after which the binding next becomes visible.
     visible_after_scope: FileScopeId,
-    /// Whether the named expression target is reached unconditionally inside its comprehension.
-    reachability: DeferredWalrusReachability,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DeferredWalrusReachability {
-    Always,
-    Never,
-    Conditional,
-}
-
-impl DeferredWalrusReachability {
-    fn from_constraint(reachability: ScopedReachabilityConstraintId) -> Self {
-        if reachability == ScopedReachabilityConstraintId::ALWAYS_TRUE {
-            Self::Always
-        } else if reachability == ScopedReachabilityConstraintId::ALWAYS_FALSE {
-            Self::Never
-        } else {
-            Self::Conditional
-        }
-    }
-
-    fn combine(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::Never, _) | (_, Self::Never) => Self::Never,
-            (Self::Always, reachability) | (reachability, Self::Always) => reachability,
-            (Self::Conditional, Self::Conditional) => Self::Conditional,
-        }
-    }
-
-    fn constraint(self) -> ScopedReachabilityConstraintId {
-        match self {
-            Self::Always => ScopedReachabilityConstraintId::ALWAYS_TRUE,
-            Self::Never => ScopedReachabilityConstraintId::ALWAYS_FALSE,
-            Self::Conditional => ScopedReachabilityConstraintId::AMBIGUOUS,
-        }
-    }
+    /// The reachability condition in `visible_after_scope`.
+    reachability: ScopedReachabilityConstraintId,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -118,7 +84,12 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
                 });
             }
 
-            if invalid_in_comprehension_iterable || invalid_rebound_comprehension_variable {
+            if invalid_in_comprehension_iterable {
+                self.visit_expr(&node.target);
+                return;
+            }
+
+            if invalid_rebound_comprehension_variable {
                 return;
             }
 
@@ -170,8 +141,7 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
         debug_assert!(matches!(category, DefinitionCategory::Binding));
         debug_assert!(!is_loop_header);
 
-        let reachability =
-            DeferredWalrusReachability::from_constraint(self.current_use_def_map().reachability);
+        let reachability = self.current_use_def_map().reachability;
         self.record_temporary_walrus_definition_in_scope(
             self.current_scope(),
             self.scope_stack.len() - 1,
@@ -179,6 +149,10 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
             definition,
             reachability,
         );
+
+        let deferred_reachability = self
+            .current_reachability_constraints_mut()
+            .add_and_constraint(reachability, ScopedReachabilityConstraintId::AMBIGUOUS);
 
         self.deferred_walrus_definitions
             .push(DeferredWalrusDefinition {
@@ -189,7 +163,7 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
                 visible_after_scope: self.current_scope(),
                 // The comprehension body can run zero times, so the binding that
                 // leaks to the enclosing scope is never guaranteed by iteration alone.
-                reachability: reachability.combine(DeferredWalrusReachability::Conditional),
+                reachability: deferred_reachability,
             });
     }
 
@@ -212,6 +186,8 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
             }
 
             let current_scope = self.current_scope();
+            let propagated_reachability =
+                self.propagate_deferred_walrus_reachability(popped_scope, deferred.reachability);
             if current_scope == deferred.target_scope {
                 let Some(scope_index) = self.scope_stack_index(deferred.target_scope) else {
                     debug_assert!(false, "deferred walrus target scope should still be active");
@@ -222,7 +198,7 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
                     scope_index,
                     deferred.target_place,
                     deferred.definition,
-                    deferred.reachability,
+                    propagated_reachability,
                 );
             } else {
                 debug_assert_eq!(
@@ -242,12 +218,10 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
                 if added {
                     self.use_def_maps[current_scope].add_place(symbol_id.into());
                 }
-                deferred.reachability =
-                    deferred
-                        .reachability
-                        .combine(DeferredWalrusReachability::from_constraint(
-                            self.current_use_def_map().reachability,
-                        ));
+                let current_reachability = self.current_use_def_map().reachability;
+                deferred.reachability = self
+                    .current_reachability_constraints_mut()
+                    .add_and_constraint(propagated_reachability, current_reachability);
                 let scope_index = self.scope_stack.len() - 1;
                 self.record_temporary_walrus_definition_in_scope(
                     current_scope,
@@ -261,6 +235,29 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
                 self.deferred_walrus_definitions.push(deferred);
             }
         }
+    }
+
+    fn propagate_deferred_walrus_reachability(
+        &mut self,
+        source_scope: FileScopeId,
+        reachability: ScopedReachabilityConstraintId,
+    ) -> ScopedReachabilityConstraintId {
+        if reachability.is_terminal() {
+            return reachability;
+        }
+
+        self.use_def_maps[source_scope]
+            .reachability_constraints
+            .mark_used(reachability);
+
+        let predicate = DeferredWalrusReachabilityPredicate {
+            file: self.file,
+            file_scope: source_scope,
+            reachability,
+        };
+        let predicate_id = self.add_predicate(predicate.into());
+        self.current_reachability_constraints_mut()
+            .add_atom(predicate_id)
     }
 
     pub(super) fn discard_deferred_walrus_definitions(&mut self, popped_scope: FileScopeId) {
@@ -324,15 +321,15 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
         scope_index: usize,
         place: ScopedPlaceId,
         definition: Definition<'db>,
-        reachability: DeferredWalrusReachability,
+        reachability: ScopedReachabilityConstraintId,
     ) {
-        if reachability == DeferredWalrusReachability::Never {
+        if reachability == ScopedReachabilityConstraintId::ALWAYS_FALSE {
             self.place_tables[scope].mark_bound(place);
             self.use_def_maps[scope].record_binding_context(place, definition);
             return;
         }
 
-        if reachability == DeferredWalrusReachability::Always {
+        if reachability == ScopedReachabilityConstraintId::ALWAYS_TRUE {
             self.record_existing_definition_in_scope(
                 scope,
                 scope_index,
@@ -353,7 +350,7 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
         let pre_definition =
             self.use_def_maps[scope].single_symbol_snapshot(symbol, &associated_member_ids);
         let pre_definition_reachability = self.use_def_maps[scope].reachability;
-        let walrus_reachability = reachability.constraint();
+        let walrus_reachability = reachability;
         self.use_def_maps[scope].reachability = self.use_def_maps[scope]
             .reachability_constraints
             .add_and_constraint(pre_definition_reachability, walrus_reachability);
@@ -381,9 +378,9 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
         scope_index: usize,
         place: ScopedPlaceId,
         definition: Definition<'db>,
-        reachability: DeferredWalrusReachability,
+        reachability: ScopedReachabilityConstraintId,
     ) {
-        if reachability == DeferredWalrusReachability::Never {
+        if reachability == ScopedReachabilityConstraintId::ALWAYS_FALSE {
             self.use_def_maps[scope].record_binding_context(place, definition);
             return;
         }
