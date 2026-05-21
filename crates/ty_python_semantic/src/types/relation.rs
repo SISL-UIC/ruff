@@ -800,6 +800,18 @@ impl<'a, 'c, 'db> TypeRelationChecker<'a, 'c, 'db> {
         result
     }
 
+    fn should_provide_callable_upcast_context(source: Type<'db>) -> bool {
+        // These displays already expose the signature being compared; wrapping them would
+        // duplicate the lower-level callable mismatch context.
+        !matches!(
+            source,
+            Type::Callable(_)
+                | Type::FunctionLiteral(_)
+                | Type::BoundMethod(_)
+                | Type::KnownBoundMethod(_)
+        )
+    }
+
     fn with_recursion_guard(
         &self,
         source: Type<'db>,
@@ -1611,11 +1623,25 @@ impl<'a, 'c, 'db> TypeRelationChecker<'a, 'c, 'db> {
 
             (_, Type::Callable(target_callable)) => {
                 self.with_recursion_guard(source, target, || {
-                    source
+                    let Some(callables) = source
                         .try_upcast_to_callable_with_policy(db, UpcastPolicy::from(self.relation))
-                        .when_some_and(db, self.constraints, |callables| {
-                            self.check_callables_vs_callable(db, &callables, target_callable)
-                        })
+                    else {
+                        return self.never();
+                    };
+
+                    let provide_callable_context = self.is_context_collection_enabled()
+                        && Self::should_provide_callable_upcast_context(source);
+                    let result = self.check_callables_vs_callable(db, &callables, target_callable);
+
+                    if result.is_never_satisfied(db) && provide_callable_context {
+                        let callable = callables.into_type(db);
+                        self.provide_context(|| ErrorContext::InferredCallableType {
+                            source,
+                            callable,
+                        });
+                    }
+
+                    result
                 })
             }
 
