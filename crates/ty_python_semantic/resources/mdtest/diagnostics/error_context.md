@@ -344,6 +344,36 @@ info: type `<class 'Number'>` has inferred callable type `(value: int) -> Number
 info: └── the first parameter has an incompatible type: `str` is not assignable to `int`
 ```
 
+Passing a class to a function expecting a `Callable`:
+
+```py
+from typing import Any, Callable
+
+def accepts_callable(callback: Callable[[Any], Any]) -> None: ...
+
+class Foo:
+    def __init__(self, x: Any, y: Any): ...
+
+accepts_callable(Foo)  # snapshot
+```
+
+```snapshot
+error[invalid-argument-type]: Argument to function `accepts_callable` is incorrect
+  --> src/mdtest_snippet.py:28:18
+   |
+28 | accepts_callable(Foo)  # snapshot
+   |                  ^^^ Expected `(Any, /) -> Any`, found `<class 'Foo'>`
+   |
+info: type `<class 'Foo'>` has inferred callable type `(x: Any, y: Any) -> Foo`
+info: └── unexpected extra parameter `y`
+info: Function defined here
+  --> src/mdtest_snippet.py:23:5
+   |
+23 | def accepts_callable(callback: Callable[[Any], Any]) -> None: ...
+   |     ^^^^^^^^^^^^^^^^ ------------------------------ Parameter declared here
+   |
+```
+
 ## Function assignability and overrides
 
 Liskov checks use function-to-function assignability.
