@@ -288,8 +288,17 @@ class NamedTupleLike(Protocol):
     if sys.version_info >= (3, 13):
         def __replace__(self, *args, **kwargs) -> Self: ...
 
+# These iteration protocols only model the methods that ty needs for focused
+# error context. The typeshed protocols include extra inherited iteration
+# methods, which can point that context at a different failure.
 class Iterator[T](Protocol):
     def __next__(self) -> T: ...
 
 class Iterable[T](Protocol):
     def __iter__(self) -> Iterator[T]: ...
+
+class AsyncIterator[T](Protocol):
+    async def __anext__(self) -> T: ...
+
+class AsyncIterable[T](Protocol):
+    def __aiter__(self) -> AsyncIterator[T]: ...
