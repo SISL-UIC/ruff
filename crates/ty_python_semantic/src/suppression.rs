@@ -14,9 +14,7 @@ use ruff_text_size::{Ranged, TextLen, TextRange, TextSize};
 
 use crate::diagnostic::DiagnosticGuard;
 use crate::lint::{GetLintError, Level, LintMetadata, LintRegistry, LintStatus};
-pub use crate::suppression::add_ignore::{
-    SuppressFix, suppress_all, suppress_single, suppression_range,
-};
+pub use crate::suppression::add_ignore::{SuppressFix, suppress_all, suppress_single};
 use crate::suppression::parser::{
     ParseError, ParseErrorKind, SuppressionComment, SuppressionParser,
 };
@@ -397,23 +395,16 @@ impl Suppressions {
             // Stop searching if the suppression starts after the range we're looking for.
             .take_while(move |suppression| range.end() >= suppression.suppressed_range.start())
             .filter(move |suppression| {
-                suppression_range_matches_diagnostic(suppression.suppressed_range, range)
+                // Don't use intersect to avoid that suppressions on inner-expression
+                // ignore errors for outer expressions
+                suppression.suppressed_range.contains(range.start())
+                    || suppression.suppressed_range.contains_inclusive(range.end())
             })
     }
 
     fn iter(&self) -> SuppressionsIter<'_> {
         self.file.iter().chain(&self.line)
     }
-}
-
-pub fn suppression_range_matches_diagnostic(
-    suppression_range: TextRange,
-    diagnostic_range: TextRange,
-) -> bool {
-    // Don't use intersect to avoid that suppressions on inner-expression ignore errors for outer
-    // expressions.
-    suppression_range.contains(diagnostic_range.start())
-        || suppression_range.contains_inclusive(diagnostic_range.end())
 }
 
 pub(crate) type SuppressionsIter<'a> =

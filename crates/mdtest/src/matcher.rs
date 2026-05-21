@@ -12,8 +12,9 @@ use ruff_db::diagnostic::{Diagnostic, DiagnosticId};
 use ruff_db::files::File;
 use ruff_db::parsed::parsed_module;
 use ruff_db::source::{SourceText, line_index, source_text};
+use ruff_python_ast::token::{TokenAt, TokenKind, Tokens};
 use ruff_source_file::{LineIndex, OneIndexed};
-use ruff_text_size::TextRange;
+use ruff_text_size::{Ranged, TextRange, TextSize};
 use smallvec::SmallVec;
 
 use crate::assertion::{InlineFileAssertions, LineAssertions, ParsedAssertion, UnparsedAssertion};
@@ -77,25 +78,21 @@ impl Failure {
 /// diagnostic matches, this function returns the diagnostics matched by
 /// `# snapshot` assertions so their inline snapshots can be validated.
 ///
-/// Each assertion has a target range: an end-of-line assertion targets that
-/// line, while a standalone assertion comment targets the following line.
-/// `map_assertion_range` lets callers adjust that target before matching. For
-/// example, a caller can widen the range from the first line of a parenthesized
-/// expression to the full expression, so an assertion above the opening line can
-/// match a diagnostic reported on a later line. After that adjustment,
-/// `range_matches_diagnostic` decides whether each diagnostic is close enough
-/// to the adjusted assertion range to be matched by the assertion.
+/// Each assertion has a target range: an end-of-line assertion targets that line,
+/// while a standalone assertion comment targets the following line. If that
+/// target ends inside a multiline token, mdtest extends it to the token's
+/// end-of-line position so assertions above multiline strings can match
+/// diagnostics reported inside the string.
 pub fn match_file(
     db: &dyn Db,
     file: File,
-    mut unmatched: Vec<Diagnostic>,
-    map_assertion_range: impl Fn(TextRange) -> TextRange,
-    range_matches_diagnostic: impl Fn(TextRange, TextRange) -> bool,
+    diagnostics: &[Diagnostic],
 ) -> Result<Vec<Diagnostic>, FailuresByLine> {
     let source = source_text(db, file);
     let parsed = parsed_module(db, file).load(db);
     let assertions = InlineFileAssertions::from_file(&source, &parsed, &line_index(db, file));
 
+    let mut unmatched = diagnostics.to_vec();
     let matcher = Matcher::from_file(db, file);
     let mut failures = FailuresByLine::default();
     let mut assertion_lines = BTreeSet::new();
@@ -103,21 +100,9 @@ pub fn match_file(
 
     for assertions in assertions {
         assertion_lines.insert(assertions.line_number);
-        // Pass `map_assertion_range` the range selected by the assertion
-        // parser: either the line with the assertion comment, or the following
-        // line for a standalone assertion comment. After that callback runs,
-        // we expand the range further to include the following line ending.
-        // This lets assertions match parser diagnostics, which can be reported
-        // at the newline following a syntax error, without making the default
-        // one-line matching behavior include the next code line.
-        let assertion_range = map_assertion_range(assertions.target_range)
+        let assertion_range = assertion_match_range(parsed.tokens(), assertions.target_range)
             .cover_offset(matcher.line_index.line_end(assertions.line_number, &source));
-        match matcher.match_line(
-            &mut unmatched,
-            &assertions,
-            assertion_range,
-            &range_matches_diagnostic,
-        ) {
+        match matcher.match_line(&mut unmatched, &assertions, assertion_range) {
             Ok(inline_diagnostics) => {
                 snapshot_diagnostics.extend(inline_diagnostics);
             }
@@ -147,6 +132,40 @@ pub fn match_file(
     } else {
         Err(failures)
     }
+}
+
+fn assertion_match_range(tokens: &Tokens, target_range: TextRange) -> TextRange {
+    TextRange::new(
+        target_range.start(),
+        assertion_end_of_line(tokens, target_range),
+    )
+}
+
+fn assertion_end_of_line(tokens: &Tokens, range: TextRange) -> TextSize {
+    let after_token_range = match tokens.at_offset(range.end()) {
+        TokenAt::None => range,
+        TokenAt::Single(token) => token.range(),
+        TokenAt::Between(..) => range,
+    };
+    let after_tokens = tokens.after(after_token_range.end());
+    after_tokens
+        .iter()
+        .find(|token| {
+            matches!(
+                token.kind(),
+                TokenKind::Newline | TokenKind::NonLogicalNewline
+            )
+        })
+        .map(Ranged::start)
+        .unwrap_or(range.end())
+}
+
+fn assertion_range_matches_diagnostic(
+    assertion_range: TextRange,
+    diagnostic_range: TextRange,
+) -> bool {
+    assertion_range.contains(diagnostic_range.start())
+        || assertion_range.contains_inclusive(diagnostic_range.end())
 }
 
 trait Unmatched {
@@ -302,14 +321,16 @@ impl Matcher {
         unmatched: &mut Vec<Diagnostic>,
         assertions: &LineAssertions,
         assertion_range: TextRange,
-        range_matches_diagnostic: &impl Fn(TextRange, TextRange) -> bool,
     ) -> Result<SmallVec<[Diagnostic; 2]>, Vec<Failure>> {
         let mut failures = vec![];
         let mut snapshot_diagnostics: SmallVec<[Diagnostic; 2]> = SmallVec::new();
         for assertion in &assertions.assertions {
             match assertion.parse() {
                 Ok(assertion) => match self.matches(&assertion, unmatched, |diagnostic| {
-                    range_matches_diagnostic(assertion_range, diagnostic_range(diagnostic))
+                    assertion_range_matches_diagnostic(
+                        assertion_range,
+                        diagnostic_range(diagnostic),
+                    )
                 }) {
                     Some(diagnostic) => {
                         if matches!(assertion, ParsedAssertion::Snapshot(_)) {
@@ -533,7 +554,7 @@ mod tests {
     use ruff_db::system::DbWithWritableSystem as _;
     use ruff_python_trivia::textwrap::dedent;
     use ruff_source_file::OneIndexed;
-    use ruff_text_size::{TextLen, TextRange};
+    use ruff_text_size::TextRange;
 
     struct ExpectedDiagnostic {
         id: DiagnosticId,
@@ -573,14 +594,6 @@ mod tests {
         source: &str,
         expected_diagnostics: Vec<ExpectedDiagnostic>,
     ) -> Result<Vec<Diagnostic>, FailuresByLine> {
-        get_result_with_assertion_range_mapper(expected_diagnostics, source, std::convert::identity)
-    }
-
-    fn get_result_with_assertion_range_mapper(
-        expected_diagnostics: Vec<ExpectedDiagnostic>,
-        source: &str,
-        map_assertion_range: impl Fn(TextRange) -> TextRange,
-    ) -> Result<Vec<Diagnostic>, FailuresByLine> {
         colored::control::set_override(false);
 
         let mut db = TestDb::setup();
@@ -591,16 +604,7 @@ mod tests {
             .into_iter()
             .map(|diagnostic| diagnostic.into_diagnostic(file))
             .collect();
-        super::match_file(
-            &db,
-            file,
-            diagnostics,
-            map_assertion_range,
-            |assertion_range, diagnostic_range| {
-                assertion_range.contains(diagnostic_range.start())
-                    || assertion_range.contains_inclusive(diagnostic_range.end())
-            },
-        )
+        super::match_file(&db, file, &diagnostics)
     }
 
     fn assert_fail(result: Result<Vec<Diagnostic>, FailuresByLine>, messages: &[(usize, &[&str])]) {
@@ -1018,24 +1022,23 @@ mod tests {
     }
 
     #[test]
-    fn error_assertion_can_match_mapped_range() {
+    fn error_assertion_can_match_multiline_string_range() {
         let source = dedent(
             r#"
             # error: [rule]
-            x = (
+            x = """
                 y
-            )
+            """
             "#,
         );
         let y = source.find('y').unwrap();
-        let result = get_result_with_assertion_range_mapper(
+        let result = get_result(
+            &source,
             vec![ExpectedDiagnostic::new(
                 DiagnosticId::lint("rule"),
                 "msg",
                 y,
             )],
-            &source,
-            |range| TextRange::new(range.start(), source.text_len()),
         );
 
         assert_ok(&result);

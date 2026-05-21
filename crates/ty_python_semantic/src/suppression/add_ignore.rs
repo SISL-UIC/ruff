@@ -194,7 +194,7 @@ pub fn suppress_single(db: &dyn Db, file: File, id: LintId, range: TextRange) ->
 /// * If `range` is within a single-line interpolated expression, then the start and end are extended to the start and end of the enclosing interpolated string.
 /// * If there's a line continuation, then the suppression range is extended to include the following line too.
 /// * If there's a multiline string, then the suppression range is extended to cover the starting and ending line of the multiline string.
-pub fn suppression_range(db: &dyn Db, file: File, range: TextRange) -> TextRange {
+fn suppression_range(db: &dyn Db, file: File, range: TextRange) -> TextRange {
     // Always insert a new suppression at the end of the range to avoid having to deal with multiline strings
     // etc. Also make sure to not pass a sub-token range to `Tokens::after`.
     let parsed = parsed_module(db, file).load(db);
