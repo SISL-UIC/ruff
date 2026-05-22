@@ -208,19 +208,21 @@ x3["inner"] = {"inner": {"a": 1}}
 f1(**x3["inner"])
 
 def _(x: dict[str, object]):
-    x["inner"]: dict[str, float | str] = {"a": 1, "b": "a"}
+    x["kwargs"]: dict[str, float | str] = {"a": 1, "b": "a"}
 
-    f2(**x["inner"])  # ok
-    f1(**x["inner"])  # ok
+    f2(**x["kwargs"])  # ok
+    f1(**x["kwargs"])  # ok
     # error: [invalid-argument-type]
-    f3(**x["inner"])
+    f3(**x["kwargs"])
 
-    x["inner"]["c"] = 1.0
-    f3(**x["inner"])  # ok
+    x["kwargs"]["c"] = 1.0
+    f3(**x["kwargs"])  # ok
 
-    x["inner"] = {"inner": {"a": 1}}
+    x["kwargs"] = {"nested": {"a": 1}}
+    # TODO: should be `dict[str, dict[str, int]]` after replacement.
+    reveal_type(x["kwargs"])  # revealed: dict[str, int | float | str]
     # error: [invalid-argument-type]
-    f1(**x["inner"])
+    f1(**x["kwargs"])
 
 class Y:
     inner: dict[str, object]
