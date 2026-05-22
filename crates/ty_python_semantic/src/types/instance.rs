@@ -682,10 +682,6 @@ impl<'db> ProtocolInstanceType<'db> {
         }
     }
 
-    pub(super) const fn is_synthesized(self) -> bool {
-        self.inner.is_synthesized()
-    }
-
     /// If this is a class-based protocol, convert the protocol-instance into a nominal instance.
     ///
     /// If this is a synthesized protocol that does not correspond to a class definition
