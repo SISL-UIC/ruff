@@ -354,6 +354,30 @@ mod tests {
     }
 
     #[test]
+    fn signature_help_bound_method_overload_self_type() {
+        let test = cursor_test(
+            r#"
+        def f(string: str):
+            string.removesuffix("suffix"<CURSOR>)
+        "#,
+        );
+
+        let result = test.signature_help().expect("Should have signature help");
+        assert!(
+            result
+                .signatures
+                .iter()
+                .any(|signature| signature.label == "(suffix: str, /) -> str")
+        );
+        assert!(
+            result
+                .signatures
+                .iter()
+                .all(|signature| !signature.label.contains("self"))
+        );
+    }
+
+    #[test]
     fn signature_help_nested_function_calls() {
         let test = cursor_test(
             r#"

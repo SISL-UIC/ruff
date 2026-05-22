@@ -654,6 +654,12 @@ impl<'db> Bindings<'db> {
             .flat_map(BindingsElement::callables_mut)
     }
 
+    pub(crate) fn bake_bound_types_into_overloads(&mut self, db: &'db dyn Db) {
+        for binding in self.iter_flat_mut() {
+            binding.bake_bound_type_into_overloads(db);
+        }
+    }
+
     fn iter_callable_items(&self) -> impl Iterator<Item = &CallableItem<'db>> {
         self.elements.iter().flat_map(BindingsElement::items)
     }
@@ -2734,14 +2740,36 @@ impl<'db> CallableBinding<'db> {
         }
     }
 
-    /// Rewrites overload signatures as if an implicit bound receiver argument had already been
-    /// consumed.
+    /// Rewrites overloads as if an implicit bound receiver argument had already been consumed.
     pub(crate) fn bake_bound_type_into_overloads(&mut self, db: &'db dyn Db) {
         let Some(bound_self) = self.bound_type.take() else {
             return;
         };
         for overload in &mut self.overloads {
-            overload.signature = overload.signature.bind_self(db, Some(bound_self));
+            let bound_signature = overload.signature.bind_self(db, Some(bound_self));
+            let removed_parameter_count = overload
+                .signature
+                .parameters()
+                .len()
+                .saturating_sub(bound_signature.parameters().len());
+
+            overload.argument_matches = overload
+                .argument_matches
+                .iter()
+                .skip(1)
+                .cloned()
+                .map(|mut argument_match| {
+                    argument_match.parameters = argument_match
+                        .parameters
+                        .iter()
+                        .filter_map(|parameter_index| {
+                            parameter_index.checked_sub(removed_parameter_count)
+                        })
+                        .collect();
+                    argument_match
+                })
+                .collect();
+            overload.signature = bound_signature;
         }
     }
 

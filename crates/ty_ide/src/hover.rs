@@ -1445,6 +1445,42 @@ mod tests {
         ");
     }
 
+    #[test]
+    fn hover_bound_method_overload_self_type() {
+        let string_hover = hover_test(
+            r#"
+        def f(string: str):
+            string.removesuf<CURSOR>fix("suffix")
+        "#,
+        )
+        .hover();
+
+        assert!(
+            string_hover.contains("def removesuffix(suffix: str, /) -> str"),
+            "{string_hover}"
+        );
+        assert!(
+            !string_hover.contains("def removesuffix(suffix: LiteralString, /) -> LiteralString"),
+            "{string_hover}"
+        );
+
+        let literal_string_hover = hover_test(
+            r#"
+        from typing_extensions import LiteralString
+
+        def f(string: LiteralString):
+            string.removesuf<CURSOR>fix("suffix")
+        "#,
+        )
+        .hover();
+
+        assert!(
+            literal_string_hover
+                .contains("def removesuffix(suffix: LiteralString, /) -> LiteralString"),
+            "{literal_string_hover}"
+        );
+    }
+
     /// When the resolved overload has no docstring and neither does the
     /// implementation, we fall back to showing a sibling overload's docstring.
     #[test]
