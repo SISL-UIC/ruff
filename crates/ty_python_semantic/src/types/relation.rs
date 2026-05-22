@@ -2209,7 +2209,12 @@ impl<'a, 'c, 'db> DisjointnessChecker<'a, 'c, 'db> {
                     .place
                     .ignore_possibly_undefined()
                     .when_none_or(db, self.constraints, |attribute_type| {
-                        self.protocol_member_has_disjoint_type_from_ty(db, &member, attribute_type)
+                        self.protocol_member_has_disjoint_type_from_ty(
+                            db,
+                            protocol,
+                            &member,
+                            attribute_type,
+                        )
                     })
             })
     }
@@ -2605,6 +2610,7 @@ impl<'a, 'c, 'db> DisjointnessChecker<'a, 'c, 'db> {
                                     ty: attribute_type, ..
                                 }) => self.protocol_member_has_disjoint_type_from_ty(
                                     db,
+                                    protocol,
                                     &member,
                                     attribute_type,
                                 ),

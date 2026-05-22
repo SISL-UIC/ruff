@@ -898,12 +898,16 @@ impl<'c, 'db> DisjointnessChecker<'_, 'c, 'db> {
     pub(super) fn protocol_member_has_disjoint_type_from_ty(
         &self,
         db: &'db dyn Db,
+        protocol: ProtocolInstanceType<'db>,
         member: &ProtocolMember<'_, 'db>,
         ty: Type<'db>,
     ) -> ConstraintSet<'db, 'c> {
         match &member.kind {
             // TODO: implement disjointness for property members as well as attribute/method members.
             ProtocolMemberKind::Property(_) => self.never(),
+            // Synthesized method protocols refine an existing type, for example a `dict` with
+            // known keys. They cannot establish that the type they refine is uninhabited.
+            ProtocolMemberKind::Method(_) if protocol.is_synthesized() => self.never(),
             ProtocolMemberKind::Method(method) => {
                 let Some(method_return_type) = non_never_callable_return_type(db, *method) else {
                     return self.never();
