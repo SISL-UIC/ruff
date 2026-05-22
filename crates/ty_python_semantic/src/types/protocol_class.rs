@@ -905,8 +905,9 @@ impl<'c, 'db> DisjointnessChecker<'_, 'c, 'db> {
         match &member.kind {
             // TODO: implement disjointness for property members as well as attribute/method members.
             ProtocolMemberKind::Property(_) => self.never(),
-            // Synthesized method protocols refine an existing type, for example a `dict` with
-            // known keys. They cannot establish that the type they refine is uninhabited.
+            // TODO: Ignore synthesized method protocols for now: `try_narrow_dict_kwargs` uses
+            // them to refine known `dict` keys, and method disjointness can otherwise suppress
+            // valid `**kwargs` call diagnostics.
             ProtocolMemberKind::Method(_) if protocol.is_synthesized() => self.never(),
             ProtocolMemberKind::Method(method) => {
                 let Some(method_return_type) = non_never_callable_return_type(db, *method) else {
