@@ -737,6 +737,22 @@ fn displayed_parameters_for_signature<'db>(
     }
 }
 
+fn call_signature_bindings<'db>(
+    db: &'db dyn Db,
+    func_type: Type<'db>,
+) -> Option<crate::types::call::Bindings<'db>> {
+    let callables = func_type.try_upcast_to_callable(db)?;
+    let bindings = func_type.bindings(db);
+
+    // Upcasting drops bound receivers before overload matching. Constructor bindings still need
+    // the flattened callable signatures that IDE features expect.
+    if bindings.has_bound_types() && !bindings.has_constructor_items() {
+        Some(bindings)
+    } else {
+        Some(callables.into_type(db).bindings(db))
+    }
+}
+
 /// Extract signature details from a function call expression.
 /// This function analyzes the callable being invoked and returns zero or more
 /// `CallSignatureDetails` objects, each representing one possible signature
@@ -750,9 +766,9 @@ pub fn call_signature_details<'db>(
     };
 
     let db = model.db();
-    if func_type.try_upcast_to_callable(db).is_none() {
+    let Some(bindings) = call_signature_bindings(db, func_type) else {
         return Vec::new();
-    }
+    };
 
     // Use from_arguments_typed so that check_types can infer TypeVar
     // specializations from the actual argument types at this call site.
@@ -762,7 +778,7 @@ pub fn call_signature_details<'db>(
                 .inferred_type(model)
                 .unwrap_or(Type::unknown())
         });
-    let mut bindings = func_type.bindings(db).match_parameters(db, &call_arguments);
+    let mut bindings = bindings.match_parameters(db, &call_arguments);
 
     // Run type checking to resolve TypeVar bindings from argument types.
     // For example, calling `dict[str, int].get("a")` resolves the `_KT`
@@ -795,7 +811,7 @@ fn resolve_single_overload<'db>(
     call_expr: &ast::ExprCall,
 ) -> Option<Signature<'db>> {
     let db = model.db();
-    let bindings = func_type.bindings(db);
+    let bindings = call_signature_bindings(db, func_type)?;
 
     let args = CallArguments::from_arguments_typed(&call_expr.arguments, |splatted_value| {
         splatted_value
@@ -972,10 +988,10 @@ pub fn call_type_simplified_by_overloads(
 ) -> Option<String> {
     let db = model.db();
     let func_type = call_expr.func.inferred_type(model)?;
-    func_type.try_upcast_to_callable(db)?;
+    let bindings = call_signature_bindings(db, func_type)?;
 
     // If the callable is trivial this analysis is useless, bail out
-    if let Some(binding) = func_type.bindings(db).single_element()
+    if let Some(binding) = bindings.single_element()
         && binding.overloads().len() < 2
     {
         return None;
@@ -1144,7 +1160,7 @@ pub fn resolved_call_signature<'db>(
 ) -> Option<CallSignatureDetails<'db>> {
     let db = model.db();
     let func_type = call_expr.func.inferred_type(model)?;
-    func_type.try_upcast_to_callable(db)?;
+    let bindings = call_signature_bindings(db, func_type)?;
 
     let args = CallArguments::from_arguments_typed(&call_expr.arguments, |splatted_value| {
         splatted_value
@@ -1154,8 +1170,7 @@ pub fn resolved_call_signature<'db>(
 
     // Extract the `Bindings` regardless of whether type checking succeeded or failed.
     let constraints = ConstraintSetBuilder::new();
-    let mut bindings = func_type
-        .bindings(db)
+    let mut bindings = bindings
         .match_parameters(db, &args)
         .check_types(db, &constraints, &args, TypeContext::default(), &[])
         .unwrap_or_else(|CallError(_, bindings)| *bindings);

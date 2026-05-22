@@ -660,6 +660,14 @@ impl<'db> Bindings<'db> {
         }
     }
 
+    pub(crate) fn has_bound_types(&self) -> bool {
+        self.iter_flat().any(|binding| binding.bound_type.is_some())
+    }
+
+    pub(crate) fn has_constructor_items(&self) -> bool {
+        self.iter_constructor_items().next().is_some()
+    }
+
     fn iter_callable_items(&self) -> impl Iterator<Item = &CallableItem<'db>> {
         self.elements.iter().flat_map(BindingsElement::items)
     }
