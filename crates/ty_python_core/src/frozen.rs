@@ -36,10 +36,6 @@ impl<K: Ord, V> FrozenMap<K, V> {
             .ok()
             .map(|index| &self.0[index].1)
     }
-
-    pub(crate) fn contains_key(&self, key: &K) -> bool {
-        self.get(key).is_some()
-    }
 }
 
 impl<K, V> Default for FrozenMap<K, V> {

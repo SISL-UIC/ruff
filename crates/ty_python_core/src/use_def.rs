@@ -247,7 +247,7 @@ use rustc_hash::{FxBuildHasher, FxHashMap};
 
 use crate::ast_ids::ScopedUseId;
 use crate::definition::{Definition, DefinitionState};
-use crate::frozen::{FrozenMap, FrozenSalsaMap};
+use crate::frozen::FrozenMap;
 use crate::member::ScopedMemberId;
 use crate::narrowing_constraints::{ConstraintKey, ScopedNarrowingConstraint};
 use crate::place::{PlaceExprRef, ScopedPlaceId};
@@ -341,7 +341,7 @@ pub struct UseDefMap<'db> {
     /// If the definition is both a declaration and a binding -- `x: int = 1` for example -- then
     /// we don't actually need anything here, all we'll need to validate is that our own RHS is a
     /// valid assignment to our own annotation.
-    declarations_by_binding: FrozenSalsaMap<Definition<'db>, InternedDeclarationsId>,
+    declarations_by_binding: FxHashMap<Definition<'db>, InternedDeclarationsId>,
 
     /// If the definition is a declaration (only) -- `x: int` for example -- then we need
     /// [`Bindings`] to know whether this declaration is consistent with the previously
@@ -353,7 +353,7 @@ pub struct UseDefMap<'db> {
     ///
     /// If we see a binding to a `Final`-qualified symbol, we also need this map to find previous
     /// bindings to that symbol. If there are any, the assignment is invalid.
-    bindings_by_definition: FrozenSalsaMap<Definition<'db>, InternedBindingsId>,
+    bindings_by_definition: FxHashMap<Definition<'db>, InternedBindingsId>,
 
     /// [`PlaceState`] visible at end of scope for each symbol.
     end_of_scope_symbols: IndexVec<ScopedSymbolId, PlaceState>,
@@ -1799,8 +1799,9 @@ impl<'db> UseDefMapBuilder<'db> {
         bindings_by_definition: FxHashMap<Definition<'db>, Bindings>,
         interned_bindings: &mut IndexVec<InternedBindingsId, Bindings>,
         interned_ids_by_bindings: &mut FxHashMap<Bindings, InternedBindingsId>,
-    ) -> FrozenSalsaMap<Definition<'db>, InternedBindingsId> {
-        let mut interned_ids_by_definition = Vec::with_capacity(bindings_by_definition.len());
+    ) -> FxHashMap<Definition<'db>, InternedBindingsId> {
+        let mut interned_ids_by_definition: FxHashMap<Definition<'db>, InternedBindingsId> =
+            FxHashMap::with_capacity_and_hasher(bindings_by_definition.len(), FxBuildHasher);
 
         for (definition, bindings) in bindings_by_definition {
             let interned_id = if let Some(interned_id) = interned_ids_by_bindings.get(&bindings) {
@@ -1810,18 +1811,20 @@ impl<'db> UseDefMapBuilder<'db> {
                 interned_ids_by_bindings.insert(bindings, interned_id);
                 interned_id
             };
-            interned_ids_by_definition.push((definition, interned_id));
+            interned_ids_by_definition.insert(definition, interned_id);
         }
 
-        FrozenSalsaMap::from_entries(interned_ids_by_definition)
+        interned_ids_by_definition.shrink_to_fit();
+        interned_ids_by_definition
     }
 
     fn intern_declarations_by_binding(
         declarations_by_binding: FxHashMap<Definition<'db>, Declarations>,
         interned_declarations: &mut IndexVec<InternedDeclarationsId, Declarations>,
         interned_ids_by_declarations: &mut FxHashMap<Declarations, InternedDeclarationsId>,
-    ) -> FrozenSalsaMap<Definition<'db>, InternedDeclarationsId> {
-        let mut interned_ids_by_binding = Vec::with_capacity(declarations_by_binding.len());
+    ) -> FxHashMap<Definition<'db>, InternedDeclarationsId> {
+        let mut interned_ids_by_binding: FxHashMap<Definition<'db>, InternedDeclarationsId> =
+            FxHashMap::with_capacity_and_hasher(declarations_by_binding.len(), FxBuildHasher);
 
         for (binding, declarations) in declarations_by_binding {
             let interned_id =
@@ -1832,10 +1835,11 @@ impl<'db> UseDefMapBuilder<'db> {
                     interned_ids_by_declarations.insert(declarations, interned_id);
                     interned_id
                 };
-            interned_ids_by_binding.push((binding, interned_id));
+            interned_ids_by_binding.insert(binding, interned_id);
         }
 
-        FrozenSalsaMap::from_entries(interned_ids_by_binding)
+        interned_ids_by_binding.shrink_to_fit();
+        interned_ids_by_binding
     }
 
     fn intern_bindings_by_use(

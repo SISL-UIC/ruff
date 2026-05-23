@@ -2232,6 +2232,10 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
         use_def_maps.shrink_to_fit();
         ast_ids.shrink_to_fit();
         self.scope_ids_by_scope.shrink_to_fit();
+        self.definitions_by_node.shrink_to_fit();
+        self.expressions_by_node.shrink_to_fit();
+        self.statements_by_node.shrink_to_fit();
+        self.scopes_by_node.shrink_to_fit();
         let mut semantic_syntax_errors = self.semantic_syntax_errors.into_inner();
         semantic_syntax_errors.shrink_to_fit();
         let uses_by_collection = FrozenSalsaMap::from_entries(
@@ -2244,13 +2248,13 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
         SemanticIndex {
             place_tables,
             scopes: self.scopes,
-            definitions_by_node: FrozenMap::from(self.definitions_by_node),
-            expressions_by_node: FrozenMap::from(self.expressions_by_node),
-            statements_by_node: FrozenMap::from(self.statements_by_node),
+            definitions_by_node: self.definitions_by_node,
+            expressions_by_node: self.expressions_by_node,
+            statements_by_node: self.statements_by_node,
             scope_ids_by_scope: self.scope_ids_by_scope,
             ast_ids,
             scopes_by_expression: self.scopes_by_expression.build(),
-            scopes_by_node: FrozenMap::from(self.scopes_by_node),
+            scopes_by_node: self.scopes_by_node,
             use_def_maps,
             enclosing_lambda_statements: FrozenMap::from(self.enclosing_lambda_statements),
             collections_by_use: FrozenMap::from(self.collections_by_use),
