@@ -1004,6 +1004,8 @@ impl<'src> Parser<'src> {
                 slices.push(parser.parse_slice());
             });
 
+            slices.shrink_to_fit();
+
             slice = Expr::Tuple(ast::ExprTuple {
                 elts: slices,
                 ctx: ExprContext::Load,
@@ -1769,6 +1771,8 @@ impl<'src> Parser<'src> {
             },
         );
 
+        elements.shrink_to_fit();
+
         ast::InterpolatedStringElements::from(elements)
     }
 
@@ -2476,6 +2480,8 @@ impl<'src> Parser<'src> {
             self.expect(TokenKind::Rpar);
         }
 
+        elts.shrink_to_fit();
+
         ast::ExprTuple {
             elts,
             ctx: ExprContext::Load,
@@ -2556,6 +2562,8 @@ impl<'src> Parser<'src> {
 
         self.expect(TokenKind::Rbrace);
 
+        elts.shrink_to_fit();
+
         ast::ExprSet {
             range: self.node_range(start),
             node_index: AtomicNodeIndex::NONE,
@@ -2598,6 +2606,8 @@ impl<'src> Parser<'src> {
         });
 
         self.expect(TokenKind::Rbrace);
+
+        items.shrink_to_fit();
 
         ast::ExprDict {
             range: self.node_range(start),

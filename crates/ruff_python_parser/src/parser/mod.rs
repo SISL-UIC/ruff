@@ -519,6 +519,7 @@ impl<'src> Parser<'src> {
     ) -> ThinVec<T> {
         let mut elements = ThinVec::new();
         self.parse_list(recovery_context_kind, |p| elements.push(parse_element(p)));
+        elements.shrink_to_fit();
         elements
     }
 
@@ -573,6 +574,7 @@ impl<'src> Parser<'src> {
     ) -> Vec<T> {
         let mut elements = Vec::new();
         self.parse_comma_separated_list(recovery_context_kind, |p| elements.push(parse_element(p)));
+        elements.shrink_to_fit();
         elements
     }
 

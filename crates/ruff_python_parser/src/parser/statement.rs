@@ -739,6 +739,8 @@ impl<'src> Parser<'src> {
             self.expect(TokenKind::Rpar);
         }
 
+        names.shrink_to_fit();
+
         ast::StmtImportFrom {
             module,
             names,
@@ -1252,6 +1254,8 @@ impl<'src> Parser<'src> {
             // ["a", "b"] = ["a", "b"]
             self.validate_assignment_target(target);
         }
+
+        targets.shrink_to_fit();
 
         ast::StmtAssign {
             targets,
@@ -3528,6 +3532,8 @@ impl<'src> Parser<'src> {
         }
 
         parameters.range = self.node_range(start);
+        parameters.args.shrink_to_fit();
+        parameters.kwonlyargs.shrink_to_fit();
 
         parameters
     }

@@ -274,6 +274,9 @@ impl Parser<'_> {
 
         self.expect(TokenKind::Rbrace);
 
+        keys.shrink_to_fit();
+        patterns.shrink_to_fit();
+
         ast::PatternMatchMapping {
             range: self.node_range(start),
             keys,
@@ -764,6 +767,9 @@ impl Parser<'_> {
         );
 
         self.expect(TokenKind::Rpar);
+
+        patterns.shrink_to_fit();
+        keywords.shrink_to_fit();
 
         ast::PatternMatchClass {
             cls,
