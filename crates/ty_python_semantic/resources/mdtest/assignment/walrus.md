@@ -61,6 +61,29 @@ x.bit_length()
 reveal_type(x)  # revealed: Literal[0, 1]
 ```
 
+### Comprehension iteration observes leaked assignment
+
+A walrus in an element can affect a filter during a subsequent iteration.
+
+```py
+def repeated_items() -> list[int]:
+    return []
+
+x = 1
+[(x := None) for _ in repeated_items() if x.bit_length()]  # error: [unresolved-attribute]
+```
+
+### Rejected filter assignment remains visible
+
+```py
+def possibly_none_items() -> list[int | None]:
+    return []
+
+[(filter_value := "replacement") for item in possibly_none_items() if (filter_value := item) is None]
+# error: [possibly-unresolved-reference]
+reveal_type(filter_value)  # revealed: int | None | Literal["replacement"]
+```
+
 ### Comprehension filter
 
 ```py
@@ -237,6 +260,87 @@ gen = ((h := i * 2) for i in Iterable())
 reveal_type(h)  # revealed: Unknown
 ```
 
+### Consumed generator expression
+
+A generator expression that is passed directly to a call may be consumed before that call returns,
+so named expression targets can be bound in the enclosing scope.
+
+```py
+def items() -> list[int]:
+    return []
+
+list((list_target := item for item in items()))
+# error: [possibly-unresolved-reference]
+reveal_type(list_target)  # revealed: int
+
+any((any_target := item) > 0 for item in items())
+# error: [possibly-unresolved-reference]
+reveal_type(any_target)  # revealed: int
+
+all((all_target := item) > 0 for item in items())
+# error: [possibly-unresolved-reference]
+reveal_type(all_target)  # revealed: int
+
+def consume_items(*args: object) -> None:
+    pass
+
+consume_items(*((starred_target := item) for item in items()))
+# error: [possibly-unresolved-reference]
+reveal_type(starred_target)  # revealed: int
+
+consume_items(
+    *((starred_early_target := item) for item in items()),
+    starred_early_target,  # error: [possibly-unresolved-reference]
+)
+# error: [possibly-unresolved-reference]
+reveal_type(starred_early_target)  # revealed: int
+
+def consume(first: object, second: object) -> None:
+    pass
+
+consume(
+    (delayed_target := item for item in items()),
+    delayed_target,  # error: [unresolved-reference]
+)
+# error: [possibly-unresolved-reference]
+reveal_type(delayed_target)  # revealed: int
+
+[*((display_target := item) for item in items())]
+# error: [possibly-unresolved-reference]
+reveal_type(display_target)  # revealed: int
+
+for _ in ((loop_target := item) for item in items()):
+    pass
+
+# error: [possibly-unresolved-reference]
+reveal_type(loop_target)  # revealed: int
+
+for _ in ((body_target := item) for item in items()):
+    body_target.bit_length()
+
+for _ in (item for item in items() if (body_filter_target := item) > 0):
+    body_filter_target.bit_length()
+
+for _ in (item for item in items() if (exit_filter_target := item) > 0):
+    pass
+
+# error: [possibly-unresolved-reference]
+reveal_type(exit_filter_target)  # revealed: int
+
+(*assignment_items,) = ((assignment_target := item) for item in items())
+# error: [possibly-unresolved-reference]
+reveal_type(assignment_target)  # revealed: int
+
+0 in ((membership_target := item) for item in items())
+# error: [possibly-unresolved-reference]
+reveal_type(membership_target)  # revealed: int
+
+def delegate_items():
+    yield from ((yield_from_target := item) for item in items())
+    # error: [possibly-unresolved-reference]
+    reveal_type(yield_from_target)  # revealed: int
+```
+
 ### Generator expression target is bound lazily
 
 Named expression targets in generator expressions are not bound when the generator object is
@@ -319,19 +423,20 @@ reveal_type(nested)  # revealed: Unknown
 
 ### Read before named expression target is bound
 
-Reads that execute before a comprehension named expression target is assigned do not resolve to the
-target definition being created.
+Reads that execute before a comprehension named expression target is assigned can resolve to the
+target definition from a preceding iteration, but the binding is not available on the first
+iteration.
 
 ```py
-# error: [unresolved-reference]
+# error: [possibly-unresolved-reference]
 [(x, x := y) for y in [1]]
 # error: [possibly-unresolved-reference]
 reveal_type(x)  # revealed: int
 
-# error: [unresolved-reference]
+# error: [possibly-unresolved-reference]
 [(q := q + 1) for _ in [0]]
 # error: [possibly-unresolved-reference]
-reveal_type(q)  # revealed: Unknown
+reveal_type(q)  # revealed: Divergent
 ```
 
 ### Assignment diagnostics for named expression target
@@ -351,10 +456,19 @@ reveal_type(x)  # revealed: int
 A named expression in a comprehension infers the value with the target's contextual type.
 
 ```py
-from typing import Callable
+from typing import Callable, TypedDict
 
 f: Callable[[int], int]
 [(f := lambda x: x.missing) for _ in [0]]  # error: [unresolved-attribute]
+
+class Bar(TypedDict):
+    bar: int
+
+ordinary: Bar
+(ordinary := {})  # error: [missing-typed-dict-key]
+
+leaked: Bar
+[(leaked := {}) for _ in [0]]  # error: [missing-typed-dict-key]
 ```
 
 ### Nested lazy scope captures named expression target

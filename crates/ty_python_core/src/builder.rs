@@ -174,6 +174,15 @@ pub(super) struct SemanticIndexBuilder<'db, 'ast> {
     in_try: bool,
     comprehension_iterable_nesting: u32,
     active_comprehension_targets: Vec<FxHashSet<Name>>,
+    /// Rejected filter paths can still leak named-expression bindings to the enclosing scope.
+    rejected_comprehension_states: Vec<Vec<FlowSnapshot>>,
+    /// The generator expression currently being evaluated in a context that may consume it, if
+    /// any.
+    ///
+    /// Generator bodies are lazy unless their surrounding syntax evaluates their iterator. Keep
+    /// their deferred walrus definitions alive until that consumption point so bindings can
+    /// become visible afterward.
+    consumed_generator_expression: Option<&'ast ast::ExprGenerator>,
 
     // Semantic Index fields
     scopes: IndexVec<FileScopeId, Scope>,
@@ -266,6 +275,8 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
             in_try: false,
             comprehension_iterable_nesting: 0,
             active_comprehension_targets: Vec::new(),
+            rejected_comprehension_states: Vec::new(),
+            consumed_generator_expression: None,
             semantic_syntax_errors: RefCell::default(),
             narrowing_aliases: FxHashMap::default(),
             alias_predicates: FxHashMap::default(),
@@ -431,6 +442,75 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
         self.comprehension_iterable_nesting += 1;
         visit(self);
         self.comprehension_iterable_nesting -= 1;
+    }
+
+    fn direct_generator_expression(
+        expression: &'ast ast::Expr,
+    ) -> Option<&'ast ast::ExprGenerator> {
+        match expression {
+            ast::Expr::Generator(generator) => Some(generator),
+            _ => None,
+        }
+    }
+
+    fn with_consumed_generator_expression(
+        &mut self,
+        generator: Option<&'ast ast::ExprGenerator>,
+        visit: impl FnOnce(&mut Self),
+    ) {
+        let previous = self.consumed_generator_expression;
+        self.consumed_generator_expression = generator;
+        visit(self);
+        self.consumed_generator_expression = previous;
+    }
+
+    fn generator_expression_scope(&self, generator: &'ast ast::ExprGenerator) -> FileScopeId {
+        self.scopes_by_node[&NodeWithScopeRef::GeneratorExpression(generator).node_key()]
+    }
+
+    fn visit_retained_generator_expression(
+        &mut self,
+        expression: &'ast ast::Expr,
+    ) -> Option<FileScopeId> {
+        let generator = Self::direct_generator_expression(expression);
+        self.with_consumed_generator_expression(generator, |builder| {
+            builder.visit_expr(expression);
+        });
+        generator.map(|generator| self.generator_expression_scope(generator))
+    }
+
+    fn visit_eagerly_iterated_expression(&mut self, expression: &'ast ast::Expr) {
+        if let Some(generator_scope) = self.visit_retained_generator_expression(expression) {
+            self.propagate_deferred_walrus_definitions(generator_scope);
+        }
+    }
+
+    fn visit_call_arguments(&mut self, arguments: &'ast ast::Arguments) {
+        let mut call_consumed_generator_scopes = Vec::new();
+        for argument in &arguments.args {
+            let generator = Self::direct_generator_expression(argument);
+            self.with_consumed_generator_expression(generator, |builder| {
+                builder.visit_expr(argument);
+            });
+            if let Some(generator) = generator {
+                call_consumed_generator_scopes.push(self.generator_expression_scope(generator));
+            }
+        }
+        for keyword in &arguments.keywords {
+            let generator = keyword
+                .arg
+                .as_ref()
+                .and(Self::direct_generator_expression(&keyword.value));
+            self.with_consumed_generator_expression(generator, |builder| {
+                builder.visit_keyword(keyword);
+            });
+            if let Some(generator) = generator {
+                call_consumed_generator_scopes.push(self.generator_expression_scope(generator));
+            }
+        }
+        for generator_scope in call_consumed_generator_scopes {
+            self.propagate_deferred_walrus_definitions(generator_scope);
+        }
     }
 
     /// Push a new loop, returning the outer loop, if any.
@@ -2090,13 +2170,61 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
     /// - It then pops the new scope off the stack
     ///
     /// [`Comprehension`]: ast::Comprehension
+    fn comprehension_loop_bindings(
+        scope: NodeWithScopeRef<'ast>,
+        generators: &'ast [ast::Comprehension],
+    ) -> (LoopStmtRef<'ast>, Vec<PlaceExpr>) {
+        match scope {
+            NodeWithScopeRef::ListComprehension(expression) => (
+                LoopStmtRef::ListComprehension(expression),
+                loop_bindings_visitor::collect_comprehension_loop_bindings(
+                    generators,
+                    std::iter::once(expression.elt.as_ref()),
+                ),
+            ),
+            NodeWithScopeRef::SetComprehension(expression) => (
+                LoopStmtRef::SetComprehension(expression),
+                loop_bindings_visitor::collect_comprehension_loop_bindings(
+                    generators,
+                    std::iter::once(expression.elt.as_ref()),
+                ),
+            ),
+            NodeWithScopeRef::DictComprehension(expression) => (
+                LoopStmtRef::DictComprehension(expression),
+                loop_bindings_visitor::collect_comprehension_loop_bindings(
+                    generators,
+                    expression
+                        .key
+                        .iter()
+                        .map(AsRef::as_ref)
+                        .chain(std::iter::once(expression.value.as_ref())),
+                ),
+            ),
+            NodeWithScopeRef::GeneratorExpression(expression) => (
+                LoopStmtRef::GeneratorExpression(expression),
+                loop_bindings_visitor::collect_comprehension_loop_bindings(
+                    generators,
+                    std::iter::once(expression.elt.as_ref()),
+                ),
+            ),
+            _ => unreachable!("only comprehension scopes are visited through this helper"),
+        }
+    }
+
     fn with_generators_scope(
         &mut self,
-        scope: NodeWithScopeRef,
+        scope: NodeWithScopeRef<'ast>,
         generators: &'ast [ast::Comprehension],
         visit_outer_elt: impl FnOnce(&mut Self),
     ) {
         let is_generator_expression = matches!(scope, NodeWithScopeRef::GeneratorExpression(_));
+        let generator_may_execute_before_returning = match scope {
+            NodeWithScopeRef::GeneratorExpression(generator) => self
+                .consumed_generator_expression
+                .is_some_and(|argument| std::ptr::eq(argument, generator)),
+            _ => true,
+        };
+        let (loop_node, loop_bound_places) = Self::comprehension_loop_bindings(scope, generators);
         let mut generators_iter = generators.iter();
 
         let Some(generator) = generators_iter.next() else {
@@ -2117,6 +2245,12 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
         self.push_scope(scope);
         self.active_comprehension_targets
             .push(Self::active_comprehension_targets(generators));
+        self.rejected_comprehension_states.push(Vec::new());
+        let loop_header_info = if loop_bound_places.is_empty() {
+            None
+        } else {
+            Some(self.synthesize_loop_header_definitions(loop_node, loop_bound_places))
+        };
 
         self.add_unpackable_assignment(
             &Unpackable::Comprehension {
@@ -2150,14 +2284,24 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
         }
 
         visit_outer_elt(self);
+        for rejected_state in self
+            .rejected_comprehension_states
+            .pop()
+            .expect("rejected states are pushed with comprehension scopes")
+        {
+            self.flow_merge(rejected_state);
+        }
+        if let Some((loop_token, bound_place_ids, loop_min_definition_id)) = loop_header_info {
+            self.populate_loop_header(&bound_place_ids, loop_token, loop_min_definition_id);
+        }
         self.active_comprehension_targets
             .pop()
             .expect("active comprehension targets are pushed with comprehension scopes");
         let popped_scope = self.pop_scope();
-        if is_generator_expression {
-            self.discard_deferred_walrus_definitions(popped_scope);
-        } else {
+        if !is_generator_expression {
             self.propagate_deferred_walrus_definitions(popped_scope);
+        } else if !generator_may_execute_before_returning {
+            self.discard_deferred_walrus_definitions(popped_scope);
         }
 
         self.current_assignments = saved_assignments;
@@ -2167,8 +2311,20 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
         self.visit_expr(if_expr);
         let condition_flow_snapshot = self.flow_snapshot_for_condition(if_expr);
         self.flow_restore(condition_flow_snapshot.truthy());
-        let (predicate, _) = self.record_expression_narrowing_constraint(if_expr);
-        self.record_reachability_constraint(predicate);
+        let (predicate, predicate_id) = self.record_expression_narrowing_constraint(if_expr);
+        let reachability_constraint = self.record_reachability_constraint(predicate);
+        let accepted_state = self.flow_snapshot();
+
+        self.flow_restore(condition_flow_snapshot.falsy());
+        self.record_negated_narrowing_constraint(predicate, predicate_id);
+        self.record_negated_reachability_constraint(reachability_constraint);
+        let rejected_state = self.flow_snapshot();
+        self.rejected_comprehension_states
+            .last_mut()
+            .expect("filters are visited inside comprehension scopes")
+            .push(rejected_state);
+
+        self.flow_restore(accepted_state);
     }
 
     fn declare_parameters(&mut self, parameters: &'ast ast::Parameters) {
@@ -2837,7 +2993,15 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
             ast::Stmt::Assign(node) => {
                 debug_assert_eq!(&self.current_assignments, &[]);
 
-                self.visit_expr(&node.value);
+                let unpacked_generator = node
+                    .targets
+                    .iter()
+                    .any(|target| matches!(target, ast::Expr::List(_) | ast::Expr::Tuple(_)))
+                    .then(|| Self::direct_generator_expression(&node.value))
+                    .flatten();
+                self.with_consumed_generator_expression(unpacked_generator, |builder| {
+                    builder.visit_expr(&node.value);
+                });
 
                 // Unconstrained collection literals must be standalone expressions to participate
                 // in full-scope bidirectional inference.
@@ -2858,8 +3022,15 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
                     self.try_register_narrowing_alias(target, Some(&node.value));
                 } else {
                     let value = self.add_standalone_assigned_expression(&node.value, node);
+                    let mut unpacked_generator_scope = unpacked_generator
+                        .map(|generator| self.generator_expression_scope(generator));
 
                     for target in &node.targets {
+                        if matches!(target, ast::Expr::List(_) | ast::Expr::Tuple(_))
+                            && let Some(generator_scope) = unpacked_generator_scope.take()
+                        {
+                            self.propagate_deferred_walrus_definitions(generator_scope);
+                        }
                         self.add_unpackable_assignment(&Unpackable::Assign(node), target, value);
                     }
                 }
@@ -3171,11 +3342,16 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
                 debug_assert_eq!(&self.current_assignments, &[]);
 
                 let iter_expr = self.add_standalone_expression(iter);
-                self.visit_expr(iter);
+                let consumed_generator_scope = self.visit_retained_generator_expression(iter);
+                let deferred_before_iteration =
+                    consumed_generator_scope.map(|_| self.deferred_walrus_definitions.clone());
 
                 self.record_ambiguous_reachability();
 
                 let pre_loop = self.flow_snapshot();
+                if let Some(generator_scope) = consumed_generator_scope {
+                    self.propagate_iterated_generator_walrus_definitions(generator_scope);
+                }
 
                 // Pre-walk the loop to collect all the bound places, then create a loop header
                 // definition for each bound place. See `struct LoopHeader` for more on this. Loop
@@ -3212,9 +3388,23 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
                     self.populate_loop_header(&bound_place_ids, loop_token, loop_min_definition_id);
                 }
 
-                // We may execute the `else` clause without ever executing the body, so merge in
-                // the pre-loop state before visiting `else`.
-                self.flow_merge(pre_loop);
+                // We may execute the `else` clause without ever entering the body. A directly
+                // iterated generator can still bind walrus targets while trying and failing to
+                // yield an item, so retain that completed-consumption path separately from body
+                // entry, where a yielded item makes element walruses definite.
+                if let (Some(generator_scope), Some(deferred_before_iteration)) =
+                    (consumed_generator_scope, deferred_before_iteration)
+                {
+                    let post_body = self.flow_snapshot();
+                    self.flow_restore(pre_loop);
+                    self.deferred_walrus_definitions = deferred_before_iteration;
+                    self.propagate_deferred_walrus_definitions(generator_scope);
+                    let exhausted_without_body = self.flow_snapshot();
+                    self.flow_restore(post_body);
+                    self.flow_merge(exhausted_without_body);
+                } else {
+                    self.flow_merge(pre_loop);
+                }
                 self.visit_body(orelse);
 
                 // Breaking out of a `for` loop bypasses the `else` clause, so merge in the break
@@ -3943,6 +4133,15 @@ impl<'ast> Visitor<'ast> for SemanticIndexBuilder<'_, 'ast> {
             ast::Expr::Named(node) => {
                 self.visit_named_expression(node);
             }
+            ast::Expr::Starred(ast::ExprStarred {
+                value,
+                ctx: ast::ExprContext::Load,
+                ..
+            }) if matches!(value.as_ref(), ast::Expr::Generator(_)) => {
+                // Starred loads iterate their operand while constructing a call argument or
+                // collection display, before the containing expression completes.
+                self.visit_eagerly_iterated_expression(value);
+            }
             ast::Expr::Lambda(lambda) => {
                 self.current_statement_mut()
                     .expect("every lambda expression is part of a statement")
@@ -3995,6 +4194,31 @@ impl<'ast> Visitor<'ast> for SemanticIndexBuilder<'_, 'ast> {
                     .record_range_reachability(orelse.range(), in_type_checking_block);
                 self.visit_expr(orelse);
                 self.flow_merge(post_body);
+            }
+            ast::Expr::Call(ast::ExprCall {
+                func, arguments, ..
+            }) => {
+                self.visit_expr(func);
+                self.visit_call_arguments(arguments);
+            }
+            ast::Expr::Compare(ast::ExprCompare {
+                left,
+                ops,
+                comparators,
+                ..
+            }) if ops.iter().zip(comparators).any(|(op, comparator)| {
+                matches!(op, ast::CmpOp::In | ast::CmpOp::NotIn)
+                    && matches!(comparator, ast::Expr::Generator(_))
+            }) =>
+            {
+                self.visit_expr(left);
+                for (op, comparator) in ops.iter().zip(comparators) {
+                    if matches!(op, ast::CmpOp::In | ast::CmpOp::NotIn) {
+                        self.visit_eagerly_iterated_expression(comparator);
+                    } else {
+                        self.visit_expr(comparator);
+                    }
+                }
             }
             ast::Expr::ListComp(
                 list_comprehension @ ast::ExprListComp {
@@ -4124,12 +4348,19 @@ impl<'ast> Visitor<'ast> for SemanticIndexBuilder<'_, 'ast> {
             ast::Expr::StringLiteral(_) => {
                 walk_expr(self, expr);
             }
-            ast::Expr::Yield(_) | ast::Expr::YieldFrom(_) => {
+            ast::Expr::Yield(_) => {
                 let scope = self.current_scope();
                 if self.scopes[scope].kind() == ScopeKind::Function {
                     self.generator_functions.insert(scope);
                 }
                 walk_expr(self, expr);
+            }
+            ast::Expr::YieldFrom(ast::ExprYieldFrom { value, .. }) => {
+                let scope = self.current_scope();
+                if self.scopes[scope].kind() == ScopeKind::Function {
+                    self.generator_functions.insert(scope);
+                }
+                self.visit_eagerly_iterated_expression(value);
             }
             _ => {
                 walk_expr(self, expr);

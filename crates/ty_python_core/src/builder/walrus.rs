@@ -28,7 +28,9 @@ pub(super) struct DeferredWalrusDefinition<'db> {
     definition: Definition<'db>,
     /// The comprehension scope after which the binding next becomes visible.
     visible_after_scope: FileScopeId,
-    /// The reachability condition in `visible_after_scope`.
+    /// The reachability condition if the current comprehension iteration reaches this binding.
+    iteration_reachability: ScopedReachabilityConstraintId,
+    /// The reachability condition after the comprehension may have performed zero iterations.
     reachability: ScopedReachabilityConstraintId,
 }
 
@@ -139,18 +141,21 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
         debug_assert!(matches!(category, DefinitionCategory::Binding));
         debug_assert!(!is_loop_header);
 
-        let reachability = self.current_use_def_map().reachability;
+        let iteration_reachability = self.current_use_def_map().reachability;
         self.record_temporary_walrus_definition_in_scope(
             self.current_scope(),
             self.scope_stack.len() - 1,
             place_id,
             definition,
-            reachability,
+            iteration_reachability,
         );
 
         let deferred_reachability = self
             .current_reachability_constraints_mut()
-            .add_and_constraint(reachability, ScopedReachabilityConstraintId::AMBIGUOUS);
+            .add_and_constraint(
+                iteration_reachability,
+                ScopedReachabilityConstraintId::AMBIGUOUS,
+            );
 
         self.deferred_walrus_definitions
             .push(DeferredWalrusDefinition {
@@ -159,6 +164,7 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
                 visible_place: place_id,
                 definition,
                 visible_after_scope: self.current_scope(),
+                iteration_reachability,
                 // The comprehension body can run zero times, so the binding that
                 // leaks to the enclosing scope is never guaranteed by iteration alone.
                 reachability: deferred_reachability,
@@ -166,6 +172,21 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
     }
 
     pub(super) fn propagate_deferred_walrus_definitions(&mut self, popped_scope: FileScopeId) {
+        self.propagate_deferred_walrus_definitions_impl(popped_scope, false);
+    }
+
+    pub(super) fn propagate_iterated_generator_walrus_definitions(
+        &mut self,
+        popped_scope: FileScopeId,
+    ) {
+        self.propagate_deferred_walrus_definitions_impl(popped_scope, true);
+    }
+
+    fn propagate_deferred_walrus_definitions_impl(
+        &mut self,
+        popped_scope: FileScopeId,
+        iteration_is_proven: bool,
+    ) {
         if self.deferred_walrus_definitions.is_empty() {
             return;
         }
@@ -176,6 +197,9 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
                 continue;
             }
 
+            if iteration_is_proven {
+                deferred.reachability = deferred.iteration_reachability;
+            }
             let current_scope = self.current_scope();
             let is_live_binding = self.use_def_maps[popped_scope]
                 .place_has_live_binding(deferred.visible_place, deferred.definition);
@@ -223,13 +247,20 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
                 deferred.reachability = self
                     .current_reachability_constraints_mut()
                     .add_and_constraint(propagated_reachability, current_reachability);
+                deferred.iteration_reachability = deferred.reachability;
+                deferred.reachability = self
+                    .current_reachability_constraints_mut()
+                    .add_and_constraint(
+                        deferred.iteration_reachability,
+                        ScopedReachabilityConstraintId::AMBIGUOUS,
+                    );
                 let scope_index = self.scope_stack.len() - 1;
                 self.record_temporary_walrus_definition_in_scope(
                     current_scope,
                     scope_index,
                     symbol_id.into(),
                     deferred.definition,
-                    deferred.reachability,
+                    deferred.iteration_reachability,
                 );
                 deferred.visible_after_scope = current_scope;
                 deferred.visible_place = symbol_id.into();

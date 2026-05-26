@@ -456,8 +456,10 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             .extend(inference.expressions.iter().copied());
 
         if let Some(extra) = &inference.extra {
-            // Diagnostics that depend on these expression types are emitted by the owning
-            // statement/scope inference. Copying expression diagnostics here would duplicate them.
+            // For a leaked walrus target, the contextual cross-scope inference owns
+            // diagnostics for the value; the uncontextual inner-scope inference is
+            // merged without diagnostics.
+            self.context.extend(&extra.diagnostics);
             self.extend_cycle_recovery(extra.cycle_recovery);
             self.string_annotations
                 .extend(extra.string_annotations.iter().copied());
@@ -509,12 +511,29 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         self.extend_expression_unchecked(inference);
     }
 
+    fn extend_expression_without_diagnostics(&mut self, inference: &ExpressionInference<'db>) {
+        #[cfg(debug_assertions)]
+        assert_eq!(self.scope, inference.scope);
+
+        self.extend_expression_unchecked_impl(inference, false);
+    }
+
     fn extend_expression_unchecked(&mut self, inference: &ExpressionInference<'db>) {
+        self.extend_expression_unchecked_impl(inference, true);
+    }
+
+    fn extend_expression_unchecked_impl(
+        &mut self,
+        inference: &ExpressionInference<'db>,
+        include_diagnostics: bool,
+    ) {
         self.expressions
             .extend(inference.expressions.iter().copied());
 
         if let Some(extra) = &inference.extra {
-            self.context.extend(&extra.diagnostics);
+            if include_diagnostics {
+                self.context.extend(&extra.diagnostics);
+            }
             self.extend_cycle_recovery(extra.cycle_recovery);
             self.string_annotations
                 .extend(extra.string_annotations.iter().copied());
@@ -7227,18 +7246,20 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
 
             if let Some(expression) = self.index.try_expression(named.value.as_ref()) {
                 // PEP 572: walrus in comprehension binds in the enclosing scope.
-                // Infer the value via its standalone expression in this scope, where the
-                // comprehension iteration variables are visible. Also infer the enclosing
-                // definition so assignment diagnostics and declaration fallback are applied.
+                // Infer the value via its standalone expression in this scope, where
+                // the comprehension iteration variables are visible. When the
+                // enclosing definition exists, its contextual inference owns value
+                // diagnostics as well as assignment diagnostics and declaration fallback.
                 let expression_result =
                     infer_expression_types(db, expression, TypeContext::default());
-                self.extend_expression(expression_result);
 
                 if let Some(definition) = definition {
+                    self.extend_expression_without_diagnostics(expression_result);
                     let definition_result = infer_definition_types(db, definition);
                     self.extend_cross_scope_definition(definition_result);
                     definition_result.binding_type(definition)
                 } else {
+                    self.extend_expression(expression_result);
                     expression_result.expression_type(named.value.as_ref())
                 }
             } else if let Some(definition) = definition {
@@ -7273,9 +7294,9 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         // PEP 572: walrus in a comprehension binds in the enclosing scope, but
         // the value references comprehension-scoped variables. The builder
         // registers the value as a standalone expression in the comprehension
-        // scope so we can infer it there. We only copy expression-side
-        // results from that scope; bindings and declarations are scoped to
-        // the standalone expression's use-def map.
+        // scope so we can infer it there. This contextual inference owns value
+        // diagnostics; bindings and declarations remain scoped to the
+        // standalone expression's use-def map.
         let ty = if let Some(expression) = self.index.try_expression(value.as_ref()) {
             let result = infer_expression_types(self.db(), expression, add.type_context());
             self.extend_cross_scope_expression(result);
