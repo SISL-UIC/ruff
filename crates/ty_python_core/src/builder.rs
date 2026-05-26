@@ -487,13 +487,35 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
 
     fn visit_call_arguments(&mut self, arguments: &'ast ast::Arguments) {
         let mut call_consumed_generator_scopes = Vec::new();
-        for argument in &arguments.args {
-            let generator = Self::direct_generator_expression(argument);
-            self.with_consumed_generator_expression(generator, |builder| {
-                builder.visit_expr(argument);
+        // With a single starred positional operand, keyword values are evaluated before that
+        // operand is unpacked. Additional positional operands require building the positional
+        // argument sequence first, so their starred generators remain eager in the loop below.
+        let delayed_starred_generator = if !arguments.keywords.is_empty()
+            && let [ast::Expr::Starred(starred)] = arguments.args.as_ref()
+            && let ast::Expr::Generator(generator) = starred.value.as_ref()
+        {
+            let first_generator = generator
+                .generators
+                .first()
+                .expect("generator expressions have at least one generator");
+            let value = self.add_standalone_expression(&first_generator.iter);
+            self.with_comprehension_iterable_context(|builder| {
+                builder.visit_expr(&first_generator.iter);
             });
-            if let Some(generator) = generator {
-                call_consumed_generator_scopes.push(self.generator_expression_scope(generator));
+            Some((generator, value))
+        } else {
+            None
+        };
+
+        if delayed_starred_generator.is_none() {
+            for argument in &arguments.args {
+                let generator = Self::direct_generator_expression(argument);
+                self.with_consumed_generator_expression(generator, |builder| {
+                    builder.visit_expr(argument);
+                });
+                if let Some(generator) = generator {
+                    call_consumed_generator_scopes.push(self.generator_expression_scope(generator));
+                }
             }
         }
         for keyword in &arguments.keywords {
@@ -507,6 +529,17 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
             if let Some(generator) = generator {
                 call_consumed_generator_scopes.push(self.generator_expression_scope(generator));
             }
+        }
+        if let Some((generator, value)) = delayed_starred_generator {
+            self.with_consumed_generator_expression(Some(generator), |builder| {
+                builder.with_generators_scope(
+                    NodeWithScopeRef::GeneratorExpression(generator),
+                    &generator.generators,
+                    Some(value),
+                    |builder| builder.visit_expr(&generator.elt),
+                );
+            });
+            call_consumed_generator_scopes.push(self.generator_expression_scope(generator));
         }
         for generator_scope in call_consumed_generator_scopes {
             self.propagate_deferred_walrus_definitions(generator_scope);
@@ -2215,6 +2248,7 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
         &mut self,
         scope: NodeWithScopeRef<'ast>,
         generators: &'ast [ast::Comprehension],
+        first_generator_iter_value: Option<Expression<'db>>,
         visit_outer_elt: impl FnOnce(&mut Self),
     ) {
         let is_generator_expression = matches!(scope, NodeWithScopeRef::GeneratorExpression(_));
@@ -2232,9 +2266,15 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
         };
 
         // The `iter` of the first generator is evaluated in the outer scope, while all subsequent
-        // nodes are evaluated in the inner scope.
-        let value = self.add_standalone_expression(&generator.iter);
-        self.with_comprehension_iterable_context(|builder| builder.visit_expr(&generator.iter));
+        // nodes are evaluated in the inner scope. A starred generator call evaluates this iterable
+        // while creating the generator, before delaying its consumption until after keyword values.
+        let value = if let Some(value) = first_generator_iter_value {
+            value
+        } else {
+            let value = self.add_standalone_expression(&generator.iter);
+            self.with_comprehension_iterable_context(|builder| builder.visit_expr(&generator.iter));
+            value
+        };
 
         // Clear the assignment stack before entering the comprehension scope.
         // If the comprehension appears inside an assignment target (e.g., error-recovered
@@ -4228,6 +4268,7 @@ impl<'ast> Visitor<'ast> for SemanticIndexBuilder<'_, 'ast> {
                 self.with_generators_scope(
                     NodeWithScopeRef::ListComprehension(list_comprehension),
                     generators,
+                    None,
                     |builder| builder.visit_expr(elt),
                 );
             }
@@ -4239,6 +4280,7 @@ impl<'ast> Visitor<'ast> for SemanticIndexBuilder<'_, 'ast> {
                 self.with_generators_scope(
                     NodeWithScopeRef::SetComprehension(set_comprehension),
                     generators,
+                    None,
                     |builder| builder.visit_expr(elt),
                 );
             }
@@ -4250,6 +4292,7 @@ impl<'ast> Visitor<'ast> for SemanticIndexBuilder<'_, 'ast> {
                 self.with_generators_scope(
                     NodeWithScopeRef::GeneratorExpression(generator),
                     generators,
+                    None,
                     |builder| builder.visit_expr(elt),
                 );
             }
@@ -4264,6 +4307,7 @@ impl<'ast> Visitor<'ast> for SemanticIndexBuilder<'_, 'ast> {
                 self.with_generators_scope(
                     NodeWithScopeRef::DictComprehension(dict_comprehension),
                     generators,
+                    None,
                     |builder| {
                         if let Some(key) = key {
                             builder.visit_expr(key);
