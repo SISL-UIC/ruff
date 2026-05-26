@@ -270,20 +270,6 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
             .add_atom(predicate_id)
     }
 
-    pub(super) fn discard_deferred_walrus_definitions(&mut self, popped_scope: FileScopeId) {
-        if self.deferred_walrus_definitions.is_empty() {
-            return;
-        }
-
-        for deferred in std::mem::take(&mut self.deferred_walrus_definitions) {
-            if deferred.visible_after_scope == popped_scope {
-                self.discard_deferred_walrus_definition(deferred);
-            } else {
-                self.deferred_walrus_definitions.push(deferred);
-            }
-        }
-    }
-
     /// Returns the scope that owns a walrus target.
     ///
     /// Per [PEP 572], named expressions in comprehensions bind in the first enclosing scope that
@@ -366,14 +352,7 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
         }
 
         if reachability == ScopedReachabilityConstraintId::ALWAYS_TRUE {
-            self.record_existing_definition_in_scope(
-                scope,
-                scope_index,
-                place,
-                definition,
-                DefinitionCategory::Binding,
-                false,
-            );
+            self.record_existing_binding_in_scope(scope, scope_index, place, definition);
             return;
         }
 
@@ -391,14 +370,7 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
             .reachability_constraints
             .add_and_constraint(pre_definition_reachability, walrus_reachability);
 
-        self.record_existing_definition_in_scope(
-            scope,
-            scope_index,
-            place,
-            definition,
-            DefinitionCategory::Binding,
-            false,
-        );
+        self.record_existing_binding_in_scope(scope, scope_index, place, definition);
 
         self.use_def_maps[scope].record_and_negate_single_symbol_reachability_constraint(
             walrus_reachability,

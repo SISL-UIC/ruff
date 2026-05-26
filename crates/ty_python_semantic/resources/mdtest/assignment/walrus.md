@@ -244,7 +244,11 @@ reveal_type(e)  # revealed: int
 reveal_type(g)  # revealed: int
 ```
 
-### Generator expression
+### Generator expression eager approximation
+
+ty models generator-comprehension scopes as eager. This matches the existing comprehension model and
+avoids suppressing bindings from commonly consumed generators, although a generator body is lazy at
+runtime.
 
 ```py
 class Iterator:
@@ -255,69 +259,18 @@ class Iterable:
     def __iter__(self) -> Iterator:
         return Iterator()
 
-gen = ((h := i * 2) for i in Iterable())
-# error: [unresolved-reference]
-reveal_type(h)  # revealed: Unknown
-```
-
-### Consumed generator expression
-
-A generator expression that is passed directly to a call may be consumed before that call returns,
-so named expression targets can be bound in the enclosing scope.
-
-```py
-def items() -> list[int]:
-    return []
-
-list((list_target := item for item in items()))
+gen = ((generator_target := i * 2) for i in Iterable())
 # error: [possibly-unresolved-reference]
-reveal_type(list_target)  # revealed: int
+reveal_type(generator_target)  # revealed: int
 
-any((any_target := item) > 0 for item in items())
+list(((h := i * 2) for i in Iterable()))
 # error: [possibly-unresolved-reference]
-reveal_type(any_target)  # revealed: int
-
-all((all_target := item) > 0 for item in items())
-# error: [possibly-unresolved-reference]
-reveal_type(all_target)  # revealed: int
-
-def consume(first: object, second: object) -> None:
-    pass
-
-consume(
-    (delayed_target := item for item in items()),
-    delayed_target,  # error: [unresolved-reference]
-)
-# error: [possibly-unresolved-reference]
-reveal_type(delayed_target)  # revealed: int
-
-consume(
-    first=(keyword_target := item for item in items()),
-    second=keyword_target,  # error: [unresolved-reference]
-)
-# error: [possibly-unresolved-reference]
-reveal_type(keyword_target)  # revealed: int
-```
-
-### Generator expression target is bound lazily
-
-Named expression targets in generator expressions are not bound when the generator object is
-created.
-
-```py
-x = "s"
-gen = ((x := i) for i in range(3))
-reveal_type(x)  # revealed: Literal["s"]
-
-gen2 = ((y := i) for i in range(3))
-# error: [unresolved-reference]
-reveal_type(y)  # revealed: Unknown
+reveal_type(h)  # revealed: int
 ```
 
 ### Generator expression target is local
 
-Even though generator expression targets are bound lazily, they are local bindings in the enclosing
-function scope.
+Generator expression targets are local bindings in the enclosing function scope.
 
 ```py
 x = 0

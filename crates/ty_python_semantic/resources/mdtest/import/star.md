@@ -446,14 +446,14 @@ class Iterable:
 (d for d in Iterable())
 lambda e: (f := 42)
 
-# Definitions created by walruses in an eager comprehension scope are unique;
+# Definitions created by walruses in a comprehension scope are unique;
 # they "leak out" of the scope and are stored in the surrounding scope
 [(g := h * 2) for h in Iterable()]
 [i for j in Iterable() if (i := j - 10) > 0]
 {(k := l * 2): (m := l * 3) for l in Iterable()}
 
-# Generator expression bodies are evaluated lazily, so their walrus targets
-# are not defined when the generator object is created.
+# ty models generator-expression scopes as eager, consistent with other
+# comprehension scopes.
 ((o := p * 2) for p in Iterable())
 
 # A walrus expression nested inside several scopes *still* leaks out
@@ -488,16 +488,14 @@ reveal_type(j)  # revealed: Unknown
 # error: [unresolved-reference]
 reveal_type(p)  # revealed: Unknown
 # error: [unresolved-reference]
-reveal_type(o)  # revealed: Unknown
-# error: [unresolved-reference]
 reveal_type(r)  # revealed: Unknown
 # error: [unresolved-reference]
 reveal_type(s)  # revealed: Unknown
 # error: [unresolved-reference]
 reveal_type(t)  # revealed: Unknown
 
-# PEP 572: walrus targets in comprehensions leak into the enclosing scope, but
-# the target is only defined if the comprehension body runs at least once.
+# PEP 572: walrus targets in comprehensions leak into the enclosing scope. ty
+# models generator expressions as eager, but still retains a zero-iteration path.
 # error: [possibly-unresolved-reference]
 reveal_type(g)  # revealed: int
 # error: [possibly-unresolved-reference]
@@ -506,6 +504,8 @@ reveal_type(i)  # revealed: int
 reveal_type(k)  # revealed: int
 # error: [possibly-unresolved-reference]
 reveal_type(m)  # revealed: int
+# error: [possibly-unresolved-reference]
+reveal_type(o)  # revealed: int
 # error: [possibly-unresolved-reference]
 reveal_type(q)  # revealed: int
 ```
