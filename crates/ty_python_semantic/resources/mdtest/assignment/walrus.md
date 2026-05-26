@@ -281,47 +281,6 @@ all((all_target := item) > 0 for item in items())
 # error: [possibly-unresolved-reference]
 reveal_type(all_target)  # revealed: int
 
-def consume_items(*args: object) -> None:
-    pass
-
-consume_items(*((starred_target := item) for item in items()))
-# error: [possibly-unresolved-reference]
-reveal_type(starred_target)  # revealed: int
-
-def consume_keyword_items(*args: object, **kwargs: object) -> None:
-    pass
-
-consume_keyword_items(
-    before=keyword_before_starred_target,  # error: [unresolved-reference]
-    *((keyword_before_starred_target := item) for item in items()),
-)
-# error: [possibly-unresolved-reference]
-reveal_type(keyword_before_starred_target)  # revealed: int
-
-consume_keyword_items(
-    *((keyword_after_starred_target := item) for item in items()),
-    after=keyword_after_starred_target,  # error: [unresolved-reference]
-)
-# error: [possibly-unresolved-reference]
-reveal_type(keyword_after_starred_target)  # revealed: int
-
-consume_keyword_items(
-    *((outer_iter_target := item) for item in [outer_iter_keyword_target]),  # error: [unresolved-reference]
-    value=(outer_iter_keyword_target := 1),
-)
-
-consume_keyword_items(
-    *((keyword_body_target := keyword_body_source) for _ in items()),
-    value=(keyword_body_source := 1),
-)
-
-consume_items(
-    *((starred_early_target := item) for item in items()),
-    starred_early_target,  # error: [possibly-unresolved-reference]
-)
-# error: [possibly-unresolved-reference]
-reveal_type(starred_early_target)  # revealed: int
-
 def consume(first: object, second: object) -> None:
     pass
 
@@ -331,41 +290,6 @@ consume(
 )
 # error: [possibly-unresolved-reference]
 reveal_type(delayed_target)  # revealed: int
-
-[*((display_target := item) for item in items())]
-# error: [possibly-unresolved-reference]
-reveal_type(display_target)  # revealed: int
-
-for _ in ((loop_target := item) for item in items()):
-    pass
-
-# error: [possibly-unresolved-reference]
-reveal_type(loop_target)  # revealed: int
-
-for _ in ((body_target := item) for item in items()):
-    body_target.bit_length()
-
-for _ in (item for item in items() if (body_filter_target := item) > 0):
-    body_filter_target.bit_length()
-
-for _ in (item for item in items() if (exit_filter_target := item) > 0):
-    pass
-
-# error: [possibly-unresolved-reference]
-reveal_type(exit_filter_target)  # revealed: int
-
-(*assignment_items,) = ((assignment_target := item) for item in items())
-# error: [possibly-unresolved-reference]
-reveal_type(assignment_target)  # revealed: int
-
-0 in ((membership_target := item) for item in items())
-# error: [possibly-unresolved-reference]
-reveal_type(membership_target)  # revealed: int
-
-def delegate_items():
-    yield from ((yield_from_target := item) for item in items())
-    # error: [possibly-unresolved-reference]
-    reveal_type(yield_from_target)  # revealed: int
 ```
 
 ### Generator expression target is bound lazily

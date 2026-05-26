@@ -172,21 +172,6 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
     }
 
     pub(super) fn propagate_deferred_walrus_definitions(&mut self, popped_scope: FileScopeId) {
-        self.propagate_deferred_walrus_definitions_impl(popped_scope, false);
-    }
-
-    pub(super) fn propagate_iterated_generator_walrus_definitions(
-        &mut self,
-        popped_scope: FileScopeId,
-    ) {
-        self.propagate_deferred_walrus_definitions_impl(popped_scope, true);
-    }
-
-    fn propagate_deferred_walrus_definitions_impl(
-        &mut self,
-        popped_scope: FileScopeId,
-        iteration_is_proven: bool,
-    ) {
         if self.deferred_walrus_definitions.is_empty() {
             return;
         }
@@ -197,9 +182,6 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
                 continue;
             }
 
-            if iteration_is_proven {
-                deferred.reachability = deferred.iteration_reachability;
-            }
             let current_scope = self.current_scope();
             let is_live_binding = self.use_def_maps[popped_scope]
                 .place_has_live_binding(deferred.visible_place, deferred.definition);
