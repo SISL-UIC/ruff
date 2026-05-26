@@ -7241,7 +7241,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             let db = self.db();
             let definition = self
                 .index
-                .try_definitions(named)
+                .try_definitions(named.into())
                 .and_then(|definitions| definitions.first().copied());
 
             if let Some(expression) = self.index.try_expression(named.value.as_ref()) {
@@ -8549,7 +8549,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                 let place = if named.target.is_name_expr() {
                     if let Some(definition) = self
                         .index
-                        .try_definitions(named)
+                        .try_definitions(named.into())
                         .and_then(|definitions| definitions.first().copied())
                     {
                         Place::bound(binding_type(db, definition))
@@ -10301,8 +10301,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             "speculative `TypeInferenceBuilder` should only be used for expression inference"
         );
 
-        self.expressions
-            .extend(expressions.iter().map(|(key, ty)| (*key, *ty)));
+        self.expressions.extend(expressions.iter());
         self.context.extend(&diagnostics);
         self.extend_cycle_recovery(cycle_recovery);
         self.string_annotations

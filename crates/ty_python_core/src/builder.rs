@@ -176,12 +176,8 @@ pub(super) struct SemanticIndexBuilder<'db, 'ast> {
     active_comprehension_targets: Vec<FxHashSet<Name>>,
     /// Rejected filter paths can still leak named-expression bindings to the enclosing scope.
     rejected_comprehension_states: Vec<Vec<FlowSnapshot>>,
-    /// The generator expression currently being evaluated in a context that may consume it, if
-    /// any.
-    ///
-    /// Generator bodies are lazy unless their surrounding syntax evaluates their iterator. Keep
-    /// their deferred walrus definitions alive until that consumption point so bindings can
-    /// become visible afterward.
+    /// A generator expression passed directly to a call may execute its body before that call
+    /// returns. Retain its deferred walrus definitions until all call arguments are evaluated.
     consumed_generator_expression: Option<&'ast ast::ExprGenerator>,
 
     // Semantic Index fields

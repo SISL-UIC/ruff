@@ -290,6 +290,13 @@ consume(
 )
 # error: [possibly-unresolved-reference]
 reveal_type(delayed_target)  # revealed: int
+
+consume(
+    first=(keyword_target := item for item in items()),
+    second=keyword_target,  # error: [unresolved-reference]
+)
+# error: [possibly-unresolved-reference]
+reveal_type(keyword_target)  # revealed: int
 ```
 
 ### Generator expression target is bound lazily
