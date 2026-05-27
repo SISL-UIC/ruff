@@ -2123,20 +2123,40 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         // same variable.
         let this_scope_sees_nonlocal_bindings = !(this_scope_sees_global_bindings
             || (scope.scope(db).kind().is_class() && symbol.is_local()));
+        let mut visible_nested_declarations = nested_bindings_kind
+            .nested_declarations
+            .iter()
+            .filter(|declaration| {
+                if declaration.is_global() {
+                    this_scope_sees_global_bindings
+                } else {
+                    this_scope_sees_nonlocal_bindings
+                }
+            })
+            .peekable();
+
+        // As with loop header definitions above, use a reachability cutoff to avoid excessive perf
+        // costs in complicated projects like `isort`.
+        const MAX_EXACT_NESTED_BINDING_REACHABILITY_NODES: usize = 2048;
+        if visible_nested_declarations.peek().is_some()
+            && self
+                .index
+                .use_def_map(scope_id)
+                .reachability_constraints()
+                .used_interiors()
+                .len()
+                > MAX_EXACT_NESTED_BINDING_REACHABILITY_NODES
+        {
+            self.bindings.insert(definition, Type::unknown());
+            return;
+        }
+
         let mut union = UnionBuilder::new(db).recursively_defined(RecursivelyDefined::Yes);
-        for declaration in &nested_bindings_kind.nested_declarations {
+        for declaration in visible_nested_declarations {
             assert!(
                 declaration.is_bound,
                 "nested declarations without bindings shouldn't be recorded here",
             );
-            let declaration_is_visible = if declaration.is_global() {
-                this_scope_sees_global_bindings
-            } else {
-                this_scope_sees_nonlocal_bindings
-            };
-            if !declaration_is_visible {
-                continue;
-            }
             let nested_place_table = self.index.place_table(declaration.file_scope_id);
             let nested_symbol_id = nested_place_table
                 .symbol_id(&nested_bindings_kind.name)

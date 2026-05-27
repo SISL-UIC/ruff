@@ -723,3 +723,33 @@ def f():
     x = 3
     reveal_type(x)  # revealed: Literal[2, 3]
 ```
+
+## Large reachability constraint graphs fall back to `Unknown`
+
+We have an "excessive complexity" cutoff beyond which we stop considering nested bindings
+definitions for performance reasons, similar to how we handle loop header definitions:
+
+```py
+def f(flag: bool):
+    # A bunch of random bindings of an unrelated variable to trigger the complexity cutoff.
+    x = 0
+    (
+        flag and (x := 1), flag and (x := 2), flag and (x := 3), flag and (x := 4),
+        flag and (x := 5), flag and (x := 6), flag and (x := 7), flag and (x := 8),
+        flag and (x := 9), flag and (x := 10), flag and (x := 11), flag and (x := 12),
+        flag and (x := 13), flag and (x := 14), flag and (x := 15), flag and (x := 16),
+        flag and (x := 17), flag and (x := 18), flag and (x := 19), flag and (x := 20),
+        flag and (x := 21), flag and (x := 22), flag and (x := 23), flag and (x := 24),
+        flag and (x := 25), flag and (x := 26), flag and (x := 27), flag and (x := 28),
+        flag and (x := 29), flag and (x := 30), flag and (x := 31), flag and (x := 32),
+        flag and (x := 33), flag and (x := 34), flag and (x := 35), flag and (x := 36),
+        flag and (x := 37), flag and (x := 38), flag and (x := 36), flag and (x := 36),
+    )
+
+    # Normally this `nonlocal` write would make us infer `int` for `y`, but now we ignore it.
+    y = 0
+    def g():
+        nonlocal y;
+        y += 1
+    reveal_type(y)  # revealed: Literal[0] | Unknown
+```
