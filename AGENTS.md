@@ -85,4 +85,4 @@ When working on ty, PR titles should start with `[ty]` and be tagged with the `t
 - **Salsa incrementality (ty):** Any method that accesses `.node()` must be `#[salsa::tracked]`, or it will break incrementality. Prefer higher-level semantic APIs over raw AST access.
 - Run `cargo dev generate-all` after changing configuration options, CLI arguments, lint rules, or environment variable definitions, as these changes require regeneration of schemas, docs, and CLI references.
 - The `db` parameter should always be the first, or second, if it's a method taking a `self` argument
-- For Salsa cached functions, prefer boxed slices or call `shrink_to_fit` on collections to reduce memory usage.
+- For Salsa-cached values, avoid retaining excess collection capacity. Prefer boxed slices; otherwise shrink collections that may have spare capacity before returning them. In particular, inspect `HashMap` and `HashSet` values constructed via `extend`, `collect`, explicit reservation, or removal, since those operations can leave capacity that insert-only construction does not.
