@@ -1040,7 +1040,7 @@ jobs:
     runs-on: ubuntu-24.04
     needs: determine_changes
     if: |
-      github.repository == 'astral-sh/ruff' &&
+      github.repository == 'SISL-UIC/ruff' &&
       (
         github.ref == 'refs/heads/main' ||
         needs.determine_changes.outputs.formatter == 'true' ||
